@@ -1,0 +1,15 @@
+#include <fstream>
+#include <iostream>
+using namespace std;
+
+#include "library/direction.h"
+#include "library/mhd_solver.h"
+
+int main () {
+  MHDSolver solver;
+  solver.initialize_state();
+  solver.dump("b");
+  solver.proceed(kPi);
+  solver.dump("e");
+  return 0;
+}

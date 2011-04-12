@@ -1,0 +1,112 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+
+#include <gtest/gtest.h>
+#include <vector>
+using namespace std;
+
+#include "library/crystal.h"
+#include "library/mersenne.h"
+
+MersenneTwister randgen;
+
+void indent_trick () {
+  /*" create_tables = "*/
+  vector<Triplet<int> > bigtable(8*kSize);
+  vector<vector<Triplet<int>*> > miniptr(8, vector<Triplet<int>*>(kSize));
+
+  for (int j = 0; j < 8; ++j) {
+    const int xp = (j&1);
+    const int yp = (j&2)>>1;
+    const int zp = (j&4)>>2;
+    for (int i = 0; i < kSize; ++i) {
+      RCo<0> r(i);
+      const int bigx = 2 * r[X] + xp;
+      const int bigy = 2 * r[Y] + yp;
+      const int bigz = 2 * r[Z] + zp;
+      int addr = (bigz*(2*kSizeY) + bigy)*(2*kSizeX) + bigx;
+    
+      // Test that addresses generated are within range 
+      EXPECT_TRUE(addr >= 0);
+      EXPECT_TRUE(addr < 8 * kSize);
+    
+      bigtable[addr] = Triplet<int>(bigx, bigy, bigz);
+      miniptr[j][i] = &bigtable[addr];
+    }
+  }
+  /*" 8.times{|i| create_tables +=  "*/
+  Mesh<#{i}, Triplet<int>*> mesh#{i}(&miniptr[#{i}][0]);
+  /*"}
+
+    puts "*/
+}
+
+TEST(crystal,addr_consistency) {
+  for (int t = 0; t < 100; ++t) {
+    const int i = randgen.irand(kSize);
+    const RCo<0> r(i);
+    // test that Reduced coordinate <=> address conversion
+    // is consistent 
+    EXPECT_EQ(i, r.addr());
+  }
+}
+
+TEST(crystal,full_step_access) {
+  // Test that full stepping (i.e. +X +Y +Z) semantics 
+  // works well.
+  
+  #{create_tables}  
+  for (int t = 0; t < 100; ) {
+    const int i = randgen.irand(kSize);
+
+    const RCo<0> r(i);
+    /*" XYZi{|d,| puts "*/ if (r[#{d}] <= 0 || r[#{d}] >= kSize#{d}-1) continue; /*"}
+      
+      8.times{|bit| puts "*/ {
+      const RCo<#{bit}> r(i);
+      EXPECT_EQ(*mesh#{bit}[r], *mesh#{bit}[r+X+Y+Z-X-Y-Z]);
+      
+      /*" ['+','-'].each{|op| puts "*/
+      EXPECT_EQ(*mesh#{bit}[r] #{op} Triplet<int>(2,0,0), *mesh#{bit}[r #{op} X]);
+      EXPECT_EQ(*mesh#{bit}[r] #{op} Triplet<int>(0,2,0), *mesh#{bit}[r #{op} Y]);
+      EXPECT_EQ(*mesh#{bit}[r] #{op} Triplet<int>(0,0,2), *mesh#{bit}[r #{op} Z]);
+      /*" }
+	puts "*/
+    }
+    /*" } # end of bit loop
+      puts "*/
+    
+    ++t; // count only unskipped cases
+  }
+}
+
+TEST(crystal,half_step_access) {
+  // Test that half stepping (i.e. +HX +HY +HZ) semantics 
+  // works well. This changes the type of the iterator.
+
+  #{create_tables}  
+  for (int t = 0; t < 100; ) {
+    const int i = randgen.irand(kSize);
+
+    const RCo<0> r(i);
+    /*" XYZi{|d,| puts "*/ if (r[#{d}] <= 0 || r[#{d}] >= kSize#{d}-1) continue; /*"}
+      
+      8.times{|bit| puts "*/ {
+      const RCo<#{bit}> r(i);
+      EXPECT_EQ(*mesh#{bit}[r], *mesh#{bit}[r+X+Y+Z-X-Y-Z]);
+      
+      /*" ['+','-'].each{|op| puts "*/
+      EXPECT_EQ(*mesh#{bit}[r] #{op} Triplet<int>(1,0,0), *mesh#{bit ^ BitMask(0)}[r #{op} HX]);
+      EXPECT_EQ(*mesh#{bit}[r] #{op} Triplet<int>(0,1,0), *mesh#{bit ^ BitMask(1)}[r #{op} HY]);
+      EXPECT_EQ(*mesh#{bit}[r] #{op} Triplet<int>(0,0,1), *mesh#{bit ^ BitMask(2)}[r #{op} HZ]);
+      /*" }
+	puts "*/
+    }
+    /*" } # end of bit loop
+      puts "*/
+    
+    ++t; // count only unskipped cases
+  }
+}
+

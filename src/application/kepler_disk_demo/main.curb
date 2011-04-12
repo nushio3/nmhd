@@ -1,0 +1,118 @@
+/*"
+  require 'nushio_script/detect_machine.rb'
+  puts "*/
+
+#include <cstdio>
+#include <cstring>
+#include <fstream>
+#include <iostream>
+using namespace std;
+
+#include "library/direction.h"
+#include "library/mhd_solver.h"
+
+#include "library/cmdline.h"
+#include "library/get_time.h"
+
+const int kGPUPerNode = 3;
+
+int main (int argc, char** argv) {
+  // initiate MPI
+  int mpi_size;
+  int mpi_rank;
+
+  cmdline::parser cmdline;
+  cmdline.add("new", 0, "start a simulation from the beginning");
+  cmdline.add("continue", 0, "continue from the last savepoint");
+  cmdline.footer(" {--new | --continue}");
+  
+  if (!cmdline.parse(argc, argv)) {
+    cerr << cmdline.error() << endl << cmdline.usage() << endl;
+    return -1;
+  }
+
+  int continue_flag;
+  if (cmdline.exist("new")) {
+    continue_flag = 0;
+  } else if (cmdline.exist("continue")) {
+    continue_flag = 1;
+  } else {
+    cerr << "neither new nor continue is specified." << endl;
+    cerr << cmdline.usage() << endl;
+    return -1;    
+  }
+
+
+  
+#ifdef USE_MPI
+  MPI_Init(&argc, &argv);
+  MPI_Comm_size(MPI_COMM_WORLD, &mpi_size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &mpi_rank);
+
+  if (mpi_size != kParallelSize) {
+    cerr << "We need " << kParallelSize << " ranks; but we have " << mpi_size << endl;
+    return 1;
+  }
+
+  cudaSetDevice(mpi_rank % kGPUPerNode);
+  
+#else
+  mpi_rank = 0; mpi_size = 1;
+#endif
+  
+  LocalSetup local_setup(mpi_rank, "stat/" + simulation_tag);
+  
+  int dev_id; cudaGetDevice(&dev_id);
+  local_setup.ofs_log() << "Using device: " << dev_id << endl;
+  local_setup.ofs_log() << "Simulating " << kGlobalSizeX << " x " << kGlobalSizeY << " x "  << kGlobalSizeZ << " cells in total." << endl;
+  local_setup.ofs_log() << "Allocating " << kSizeX << " x " << kSizeY << " x "  << kSizeZ << " = "  << kSize << " cells for this node." << endl;
+  local_setup.ofs_log() << "sizeof(Real) = " << sizeof(Real) << endl;
+  local_setup.ofs_log() << "Memory consumption estimate: " << (sizeof(Real) * 40.0 * kSize / 1e6) << " Megabytes."  << endl;
+  local_setup.ofs_log() << "My physical range : "
+			<< "corner = (" << local_setup.computational_corner() << ") " 
+			<< "extent = (" << local_setup.computational_extent() << ")" << endl;
+
+  
+  MHDSolver solver(local_setup);
+  
+  /*" TimeLimit = if Machine == :tsubame
+    25*60
+    else
+    -1
+    end
+
+    puts "*/
+
+  const double time_limit = #{TimeLimit};
+  
+  solver.initialize_state();
+  //solver.save_state("b");
+
+  local_setup.ofs_log() << "Starting : Wallclock Time: " << get_time<long long int>() << endl;
+  local_setup.ofs_log() << "Starting : Physical Time: " << solver.current_time() << endl;
+  local_setup.ofs_log() << "Starting : Generation: " << solver.generation() << endl;
+  const int N = 1;
+  const Real time_step = 10.0 * kGlobalExtentX;
+  for (int i = 1; i <= N; ++i) {
+    solver.proceed(i*time_step, time_limit);
+    char buf[256];
+    sprintf(buf, "snapshot%04d", i);
+    if (mpi_rank==0) {
+      cerr << "writing to " << buf << endl;
+    }
+    //solver.save_state(buf);
+  }
+  local_setup.ofs_log() << "Finishing : Wallclock Time: " << get_time<long long int>() << endl;
+  local_setup.ofs_log() << "Finishing : Physical Time: " << solver.current_time() << endl;
+  local_setup.ofs_log() << "Finishing : Generation: " << solver.generation() << endl;
+  
+  cerr << "FIN" << endl;
+  solver.save_state("e");
+
+
+
+#ifdef USE_MPI
+  MPI_Finalize();
+#endif
+  return 0;
+}

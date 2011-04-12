@@ -1,0 +1,103 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+
+#include "library/direction.h"
+#include "simulation_config.h"
+#include "library/physics_util.h"
+#include "library/get_time.h"
+
+#include "custom_mhd_solver.h"
+
+__device__ void set_initial_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  ShockNormalAxis ez;
+  typename ShockNormalAxis::Next ex;
+  typename ShockNormalAxis::Prev ey;
+  
+  const Triplet<Real> r = o.position(pos_info);
+
+  density[o] = sq(kGamma);
+  pressure[o] = kGamma;
+  velocity[ex][o] = -sinR(r[ey]); 
+  velocity[ey][o] =  sinR(r[ex]);
+  velocity[ez][o] = 0; 
+
+  magnet[ex][o-direction::half(ex)] = -sinR(r[ey]); ;
+  magnet[ey][o-direction::half(ey)] =  sinR(2*r[ex]); 
+  magnet[ez][o-direction::half(ez)] =  0;
+}
+
+__device__ void set_boundary_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  /*
+  const int kMargin = 4;
+  if(o[X] < kMargin || o[X] > kSizeX - kMargin - 1) {
+    set_initial_condition(o, density, velocity, pressure, magnet);
+    }*/
+}
+
+#include "library/mhd_solver.inl"
+
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+#include <vector>
+using namespace std;
+
+void MHDSolver::dump (string tag) {
+}
+
+int MHDSolver::monitor () {
+  return 0;
+}
+
+int MHDSolver::initial_event () {
+  return 0;
+}
+
+int MHDSolver::final_event () {
+  return 0;
+}
+
+
+void CustomMHDSolver::fread_push(FILE *fp, vector<Real> &accum, thrust::device_vector<Real> &xs) {
+  vector<Real> canon_buffer(kSize);
+  std::fread(&canon_buffer[0], sizeof(Real), kSize, fp);  
+  host_buffer_ = xs;
+  for (int i = 0; i < kSize; ++i) {
+    accum.push_back(absR(canon_buffer[i] - host_buffer_[i]));
+  }
+}
+
+double CustomMHDSolver::validate (string canon_filename) {
+  FILE *fp=fopen(canon_filename.c_str(), "r");
+
+  if (!fread_singlet(fp, kSizeX)) return false;
+  if (!fread_singlet(fp, kSizeY)) return false;
+  if (!fread_singlet(fp, kSizeZ)) return false;
+
+  vector<Real> accum;
+  
+  fread_push(fp,accum,buffer_dict(density_));
+  fread_push(fp,accum,buffer_dict(velocity_[X]));
+  fread_push(fp,accum,buffer_dict(velocity_[Y]));
+  fread_push(fp,accum,buffer_dict(velocity_[Z]));
+  fread_push(fp,accum,buffer_dict(energy_));
+  fread_push(fp,accum,buffer_dict(magnet_[X]));
+  fread_push(fp,accum,buffer_dict(magnet_[Y]));
+  fread_push(fp,accum,buffer_dict(magnet_[Z]));
+  fclose(fp);
+
+  sort(accum.begin(), accum.end());
+
+  for (int i = accum.size() -1; i >=0; --i) {
+    double slope = (accum.size() - i - 0.5)/accum.size();
+    if (accum[i] < slope) return accum[i];
+  }
+  return accum[0];
+  
+}

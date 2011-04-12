@@ -1,0 +1,183 @@
+#include <cstdio>
+#include <iostream>
+#include <map>
+#include <sstream>
+#include <string>
+
+/*"
+  module PersistentPod
+
+  LexicalCastableTypes = ['int', 'double', 'float', 'size_t']
+  
+  def self.gen(klass_name, konf)
+  mems = konf[:members]
+  mems.each{|type0, name0, defo0|
+  type0.strip!
+  }
+
+  constructors = konf[:constructors] || []
+  
+  funs = konf[:functions]
+  esc = '%'
+  puts "*/
+class #{klass_name} {
+ protected:
+  /*"
+    mems.each{|type0, name0, defo0|
+    puts "#{type0} #{name0}_;"
+    }
+    puts "*/
+ public:
+  /*"
+    mems.each{|type0, name0, defo0, opt|
+    if (not opt) || (not (opt[:noaccess]))
+    puts "*/
+  const #{type0}& #{name0} () const { return #{name0}_; }
+  /*"
+    end
+    
+    if (not opt) || (not (opt[:noaccess] || opt[:readonly]))
+    puts "*/
+  #{type0}& #{name0} () { return #{name0}_; }
+  /*"
+    end
+    }
+    puts "*/
+  
+
+  
+  #{klass_name} () :
+  /*"
+    initializers = []
+    mems.each{|type0, name0, defo0|
+    next unless defo0
+    initializers << "#{name0}_(#{defo0})"
+    }
+    puts initializers.join(',') + "*/
+  {}
+
+  /*"
+    constructors.each{|cwriter|
+    puts cwriter[initializers.join(',')]
+    }
+    
+    puts "*/
+  
+  bool operator==(const #{klass_name} &other) const {
+    /*"
+      mems.each{|type0, name0, defo0, opt|
+      next if opt && opt[:uncompared]
+      puts "*/
+    if (#{name0}() != other.#{name0}()) return false;
+    /*"
+      }
+      puts "*/
+    return true;
+  }
+
+
+  /*"
+    LexicalCastableTypes.each{ |type0|
+    puts "*/
+  std::string encode_member (const #{type0} &x) const {
+    std::ostringstream ostr; ostr << x; return ostr.str();
+  }
+  void decode_member (const std::string &str, #{type0} &ret) const {
+    std::istringstream istr(str); istr >> ret;
+  }
+  /*"
+    }
+    puts "*/
+  
+  std::string encode_member (const std::string &x) const {
+    std::ostringstream ret;
+    char buf[3];
+    for (int i = 0; i < x.size(); ++i) {
+      unsigned char c = x[i];
+      if (33<=c && c <= 126 && c!='#{esc}') {
+	ret << c;
+      } else {
+	sprintf(buf, "%02x", c);
+	ret << '#{esc}' << buf; 
+      }
+    }
+    return ret.str();
+  }
+  void decode_member (const std::string &x, std::string &ret0) const {
+    std::ostringstream ret;
+    char buf[3]; buf[2] = 0;
+
+    for (int i = 0; i < x.size(); ++i) {
+      char c = x[i];
+      if (c!='#{esc}') {
+	ret << c;
+      } else {
+	int ic;
+	buf[0] = x[++i]; buf[1] = x[++i];
+	sscanf(buf, "%02x", &ic);
+	ret << char(ic);
+      }
+    }
+    ret0 = ret.str();
+  }
+
+  #{funs}
+};
+
+
+namespace {
+std::ostream& operator<<(std::ostream& ostr, const #{klass_name} & x) {
+  /*"
+    mems_reco_length = 0
+    mems.each{|type0, name0, defo0, opt|
+    next if opt && opt[:ephemeral]
+    mems_reco_length += 1
+    }
+    puts "*/
+
+  ostr << #{mems_reco_length} << std::endl;
+  /*"
+    mems.each{|type0, name0, defo0, opt|
+    next if opt && (opt[:ephemeral])
+    puts "*/
+  ostr << "#{name0}" << " " << x.encode_member(x.#{name0}()) << std::endl;
+  /*"
+    }
+    puts "*/
+  return ostr;
+}
+
+std::istream& operator>>(std::istream& istr, #{klass_name} & x) {
+  int n; istr >> n;
+  std::map<std::string, std::string> buf;
+
+  for (int i = 0; i < n; ++i) {
+    std::string key, val;
+    istr >> key >> val;
+    buf[key] = val;
+  }
+    
+  /*"
+    mems.each{|type0, name0, defo0, opt|
+    next if opt && (opt[:ephemeral] || opt[:readonly])
+    puts "*/
+  if (buf.count("#{name0}")) {
+    std::istringstream iss(buf["#{name0}"]);
+    std::string tmp;
+    iss >> tmp; x.decode_member(tmp, x.#{name0}());
+  }
+  
+  /*"
+    
+    }
+    puts "*/
+  return istr;
+}
+}
+
+
+/*"
+  end
+  end 
+  
+  puts "*/

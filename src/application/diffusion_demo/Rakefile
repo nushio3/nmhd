@@ -1,0 +1,18 @@
+require 'nushio_script/detect_machine'
+require 'nushio_script/rake'
+require 'rake/clean'
+
+cinclude 'simulation_config.h' => 'library/direction.h'
+cinclude 'library/crystal.h' => 'simulation_config.h' 
+cinclude 'library/diffusion_solver.h' => 'simulation_config.h'
+cinclude 'library/diffusion_solver.inl' => 'library/crystal.h'
+cinclude 'diffusion_solver.cu' => 'simulation_config.h'
+cinclude 'diffusion_solver.cu' => 'library/diffusion_solver.h'
+cinclude 'diffusion_solver.cu' => 'library/diffusion_solver.inl'
+
+cinclude 'main.cu' => 'library/diffusion_solver.h'
+
+opt = RakeOption::new()
+opt.compile << '-arch=sm_20' if Machine==:tsubame
+
+cprogram('demo', ['main.cu', 'diffusion_solver.cu'], opt)

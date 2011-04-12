@@ -1,0 +1,11 @@
+#pragma once
+#include <algorithm>
+#include <string>
+#include <vector>
+#include "library/mhd_solver.h"
+
+class CustomMHDSolver : public MHDSolver {
+  void fread_push(FILE *fp, std::vector<Real> &accum, thrust::device_vector<Real> &xs);
+public:
+  double validate (std::string canon_filename);
+};

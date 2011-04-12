@@ -1,0 +1,105 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+
+#include "library/direction.h"
+#include "simulation_config.h"
+#include "library/physics_util.h"
+
+
+__device__ void set_initial_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  ShockNormalAxis ex;
+  typename ShockNormalAxis::Next ey;
+  typename ShockNormalAxis::Prev ez;
+  
+  const Triplet<Real> r = o.position(pos_info);
+  if (r[ex] < 0) {
+    density[o] = 1.0f;
+    pressure[o] = 1.0f;
+    magnet[ey][o-direction::half(ey)] = 1.0f;
+  } else {
+    density[o] = 0.125f;
+    pressure[o] = 0.1f;
+    magnet[ey][o-direction::half(ey)] = -1.0f;
+  }
+  magnet[ex][o-direction::half(ex)] = 0.75f;
+  magnet[ez][o-direction::half(ez)] = 0.0f;
+  /*" XYZ{|d| puts "*/ velocity[#{d}][o] = 0.0f; /*" }
+    puts "*/
+}
+
+__device__ void set_boundary_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  /*
+  const int kMargin = 4;
+  if(o[X] < kMargin || o[X] > kSizeX - kMargin - 1) {
+    set_initial_condition(o, density, velocity, pressure, magnet);
+    }*/
+}
+
+#include "library/mhd_solver.inl"
+
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+using namespace std;
+
+void MHDSolver::dump (string tag) {
+  typename ShockNormalAxis::Next ey;
+  typename ShockNormalAxis::Prev ez;
+
+  string dir = "stat/" + simulation_tag;
+  
+  system(("mkdir -p " + dir).c_str());
+  {
+    ofstream ofs((dir + "/dump_"+tag+"_hydro.txt").c_str());
+    for (int addr = 0; addr < kSize; ++addr) {
+      RCo<7> o(addr);
+
+      /*" is_center = "*/
+      (o[ey] == simulation_config::size(ey)/2) && (o[ez] == simulation_config::size(ez)/2)
+      /*" puts "*/
+	
+      if (#{is_center}) {
+	ofs << positioning(o)
+	    << " " << buffer_dict(density_)[addr]
+	  /*" XYZ{|d| puts "*/
+	    << " " << buffer_dict(velocity_[#{d}])[addr]
+	  /*" }; puts "*/
+	    << " " << buffer_dict(pressure_)[addr]
+	    <<endl;
+      }
+    }
+  }
+  /*" Xyz{|dir, cdir| puts "*/
+  {
+    ofstream ofs((dir + "/dump_"+tag+"_b#{dir}.txt").c_str());
+    for (int addr = 0; addr < kSize; ++addr) {
+      RCo<7 ^ #{cdir}Axis::mask> o(addr);
+      if (#{is_center}) {
+	ofs << positioning(o)
+	    << " " << buffer_dict(magnet_[#{cdir}])[addr]
+	    <<endl;
+      }
+    }
+  }
+  /*" }; puts "*/
+}
+
+int MHDSolver::monitor () {
+  return 0;
+}
+
+
+int MHDSolver::initial_event () {
+  return 0;
+}
+
+int MHDSolver::final_event () {
+  return 0;
+}
+

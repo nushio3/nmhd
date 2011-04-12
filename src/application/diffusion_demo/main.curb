@@ -1,0 +1,20 @@
+#include <fstream>
+#include <iostream>
+using namespace std;
+
+#include "library/direction.h"
+#include "library/diffusion_solver.h"
+
+int main () {
+  DiffusionSolver solver;
+  {
+    ofstream ofs("dump0.txt");
+    solver.dump(ofs);
+  }
+  solver.proceed(0.01);
+  {
+    ofstream ofs("dump1.txt");
+    solver.dump(ofs);
+  }
+  return 0;
+}

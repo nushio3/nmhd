@@ -1,0 +1,58 @@
+/*"
+  require "nushio_script/optimization.rb"
+
+  puts "*/
+
+#include <fstream>
+#include <cstdio>
+#include <iomanip>
+#include <iostream>
+using namespace std;
+
+#include "library/direction.h"
+#include "library/get_time.h"
+#include "custom_mhd_solver.h"
+
+#include "main_detail.h"
+
+const string kCanonFilename = "#{Optimization::CanonFilename}";
+
+int main_canonical () {
+  CustomMHDSolver solver;
+  solver.proceed(kPi);
+  solver.write(kCanonFilename);
+  return 0;
+}
+
+int main_bench (int gpu_id, string ofn) {
+  cudaSetDevice(gpu_id);
+  int ret;
+  cudaGetDevice(&ret);
+  cerr << "set device to " << ret << endl;
+  
+  CustomMHDSolver solver;
+  solver.initialize_state();
+  const double time_begin = get_time<double>();
+  solver.proceed(kPi);
+  cudaThreadSynchronize();
+  const double time_end = get_time<double>();
+  const double mu_count = double(solver.generation()) * kSizeX * kSizeY * kSizeZ;
+  const double mups = mu_count/(time_end - time_begin);
+  
+  cerr << solver.generation() << " ages " << endl;
+  cerr << mu_count << "mesh updates in " << (time_end - time_begin) << " sec." << endl;
+  cerr << mups << "mesh updates per sec." << endl;
+
+  const double validation_index = solver.validate(kCanonFilename);
+  
+  cerr << "validation : error index = " << validation_index << endl;
+  
+  ofstream ofs(ofn.c_str(), ios::app);
+  ofs << setprecision(20);
+  if (validation_index < 0.01) {
+    ofs << "AC" << " " << mups/1e6 << endl;
+  } else {
+    ofs << "WA " << 0 << endl;
+  }
+  return 0;
+}

@@ -1,0 +1,140 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+
+#include <gtest/gtest.h>
+#include <vector>
+using namespace std;
+
+#include "library/crystal.h"
+#include "library/mersenne.h"
+#include "library/thrust_vector.h"
+
+MersenneTwister randgen;
+
+const int N_BLOCK = 16;
+const int N_THRE = 32;
+
+void indent_trick () {
+  /*" create_tables = "*/
+  vector<thrust::thrust_vector<int> > table(8, thrust::thrust_vector<int>(kSize));
+  vector<vector<int> > host_table(8, vector<int>(kSize));
+
+  for (int j = 0; j < 8; ++j) {
+    const int xp = (j&1);
+    const int yp = (j&2)>>1;
+    const int zp = (j&4)>>2;
+    for (int i = 0; i < kSize; ++i) {
+      RCo<0> r(i);
+      const int bigx = 2 * r[X] + xp;
+      const int bigy = 2 * r[Y] + yp;
+      const int bigz = 2 * r[Z] + zp;
+      int addr = (bigz*(2*kSizeY) + bigy)*(2*kSizeX) + bigx;
+    
+      // Test that addresses generated are within range 
+      EXPECT_TRUE(addr >= 0);
+      EXPECT_TRUE(addr < 8 * kSize);
+
+
+      const int code = addr * 13 + randgen.irand(13);
+      table[j][i] = code;
+      host_table[j][i] = code;
+    }
+  }
+  /*" 8.times{|i| create_tables +=  "*/
+  Mesh<#{i}, int> mesh#{i}(raw(table[#{i}]));
+  Mesh<#{i}, int> host_mesh#{i}(&host_table[#{i}][0]);
+  /*"}
+
+    puts "*/
+}
+
+template <int Bit>
+__global__ void readout_kernel (Mesh<Bit, int> mesh, int* ret) {
+
+  for (int i =  blockIdx.x * blockDim.x + threadIdx.x; i < kSize;
+       i += blockDim.x * gridDim.x) {
+    ret[i] = mesh[RCo<Bit>(i)];
+  }
+}
+
+TEST(crystal,transformation_law) {
+  #{create_tables}
+  thrust::thrust_vector<int> ret(kSize);
+
+  /*" 8.times{|bit| puts "*/
+  readout_kernel<<<N_BLOCK, N_THRE>>>(mesh#{bit}, raw(ret));
+  for (int i = 0; i < kSize; ++i) {
+    EXPECT_EQ(host_table[#{bit}][i], host_mesh#{bit}[RCo<#{bit}>(i)]);
+    EXPECT_EQ(host_mesh#{bit}[RCo<#{bit}>(i)], ret[i]);
+  }
+  /*" }
+    puts "*/
+}
+
+
+template <int Bit, class Direction>
+__global__ void shift_readout_kernel (Direction d, Mesh<Bit, int> mesh, int* ret) {
+
+  for (int i =  blockIdx.x * blockDim.x + threadIdx.x; i < kSize;
+       i += blockDim.x * gridDim.x) {
+    ret[i] = mesh[RCo<Bit>(i) + d];
+  }
+}
+
+TEST(crystal,full_step_access) {
+  #{create_tables}
+  thrust::thrust_vector<int> ret(kSize);
+    
+  /*"
+    XYZ{|cdir|
+    8.times{|bit|
+    puts "*/
+  shift_readout_kernel<<<N_BLOCK, N_THRE>>>(#{cdir}, mesh#{bit}, raw(ret));
+
+  for (int i = 0; i < kSize; ++i) {
+    const RCo<#{bit}> r(i);
+    /*" XYZi{|d,| puts "*/ if (r[#{d}] <= 0 || r[#{d}] >= kSize#{d}-1) continue; /*"}
+      puts "*/
+    EXPECT_EQ(host_mesh#{bit}[r + #{cdir}], ret[i]);
+  }
+  /*" 
+    } # end of bit loop
+    } # end of XYZ loop
+    
+    puts "*/
+}
+
+
+template <int Bit, class Direction>
+__global__ void half_shift_readout_kernel (Direction d, Mesh<Bit, int> mesh, int* ret) {
+
+  for (int i =  blockIdx.x * blockDim.x + threadIdx.x; i < kSize;
+       i += blockDim.x * gridDim.x) {
+    ret[i] = mesh[RCo<Bit ^ Direction::mask>(i) + d];
+  }
+}
+
+TEST(crystal,half_step_access) {
+  #{create_tables}
+  thrust::thrust_vector<int> ret(kSize);
+    
+  /*"
+    XYZi{|cdir, ctr|
+    8.times{|bit|
+    puts "*/
+  half_shift_readout_kernel<<<N_BLOCK, N_THRE>>>(H#{cdir}, mesh#{bit ^ BitMask(ctr)}, raw(ret));
+
+  for (int i = 0; i < kSize; ++i) {
+    const RCo<#{bit}> r(i);
+    /*" XYZ{|d| puts "*/ if (r[#{d}] <= 0 || r[#{d}] >= kSize#{d}-1) continue; /*"}
+      puts "*/
+    EXPECT_EQ(host_mesh#{bit ^ BitMask(ctr)}[r + H#{cdir}], ret[i]);
+  }
+  /*" 
+    } # end of bit loop
+    } # end of XYZ loop
+    
+    puts "*/
+}
+

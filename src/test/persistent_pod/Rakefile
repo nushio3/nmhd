@@ -1,0 +1,7 @@
+require 'nushio_script/rake'
+require 'rake/clean'
+
+
+cinclude 'main.cpp' => 'nushio_script/persistent_pod.h'
+
+gtest('persistent_pod', ['main.cpp'])

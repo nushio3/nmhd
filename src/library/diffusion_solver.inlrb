@@ -1,0 +1,75 @@
+/*
+  require 'nushio_script/crystal'
+  puts "*/
+
+#include "library/diffusion_solver.h"
+#include "library/crystal.h"
+
+const int kThreadDim = 32, kBlockDim = 32;
+
+DiffusionSolver::DiffusionSolver () :
+  buf_0(kSize) , buf_1(kSize) {
+  density = &buf_0;
+  buf = &buf_1;
+  initial_condition();
+}
+
+__global__ void initial_condition_kernel (PositioningSetup posser, Mesh<7,Real> density) {
+  for (int addr = blockIdx.x * blockDim.x + threadIdx.x; addr < kSize;
+       addr += blockDim.x * gridDim.x) {
+    RCo<7> o(addr);
+    density[o] = initial_density(o.position(posser));
+  }
+}
+
+void DiffusionSolver::initial_condition () {
+  PositioningSetup posser(Triplet<Real>(kGlobalCornerX,kGlobalCornerY,kGlobalCornerZ));
+  
+  initial_condition_kernel<<<kBlockDim, kThreadDim>>>(posser, Mesh<7,Real>(raw(*density)));
+}
+
+void DiffusionSolver::boundary_condition () {
+  
+}
+
+template<class Direction>
+__global__ void proceed_kernel
+(Direction ex, Real dt, Mesh<7,Real> density, Mesh<7,Real> ret) {
+  for (int addr = blockIdx.x * blockDim.x + threadIdx.x; addr < kSize;
+       addr += blockDim.x * gridDim.x) {
+    RCo<7> o(addr);
+    const Real fluxR = - dt * kDiffusionCoefficient * (density[o + ex] - density[o]) / dR(ex);
+    const Real fluxL = - dt * kDiffusionCoefficient * (density[o] - density[o - ex]) / dR(ex);
+    ret[o] = density[o] - (fluxR - fluxL) / dR(ex);
+  }
+}
+
+void DiffusionSolver::proceed (const Real integral_time) {
+  bool break_flag = false;
+  Real elapsed_time = 0;
+  const Real start_time = current_time();
+  
+  do {
+    std::cerr << "elapsed: " << elapsed_time << std::endl;
+    double dt = 0.5f * kMinDR * kMinDR / kDiffusionCoefficient;
+    const double next_time = elapsed_time + dt;
+    if (next_time > integral_time) {
+      dt = integral_time - elapsed_time;
+      break_flag = true;
+    }
+    boundary_condition();
+
+    /*" XYZ{|d| puts "*/
+    proceed_kernel<<<kBlockDim, kThreadDim>>>
+      (#{d},dt,
+       Mesh<7, Real>(raw(*density)),
+       Mesh<7, Real>(raw(*buf))
+       );
+    swap(density, buf);
+    /*" }
+      puts "*/
+    elapsed_time += dt;
+  } while(!break_flag);
+}
+
+

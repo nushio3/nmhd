@@ -1,0 +1,29 @@
+require 'nushio_script/rake'
+require 'nushio_script/detect_machine'
+require 'rake/clean'
+
+cinclude 'simulation_config.h' => 'simulation_config_extern.rb'
+cinclude 'simulation_config.h' => 'library/direction.h'
+cinclude 'library/crystal.h' => 'simulation_config.h' 
+cinclude 'library/mhd_solver.h' => 'simulation_config.h'
+cinclude 'library/mhd_solver.h' => 'simulation_config.h'
+cinclude 'library/mhd_solver.h' => 'library/crystal.h'
+cinclude 'library/mhd_solver.h' => 'library/device_mesh.h'
+cinclude 'library/mhd_solver.h' => 'library/physics_util.h'
+
+cinclude 'library/mhd_solver.inl' => 'library/mhd_solver.h'
+
+cinclude 'mhd_solver.cu' => 'simulation_config.h'
+cinclude 'mhd_solver.cu' => 'library/mhd_solver.h'
+cinclude 'mhd_solver.cu' => 'library/mhd_solver.inl'
+
+cinclude 'main.cu' => 'library/mhd_solver.h'
+
+file 'simulation_config_extern.rb' do
+  sh "tools/generate_config.rb --default"
+end
+
+opt = RakeOption::new()
+opt.compile << '-arch=sm_20' if Machine==:tsubame
+
+cprogram('demo', ['main.cu', 'mhd_solver.cu'], opt)

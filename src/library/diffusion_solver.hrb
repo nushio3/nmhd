@@ -1,0 +1,24 @@
+#pragma once
+#include <iostream>
+
+#include "simulation_config.h"
+#include "library/thrust_vector.h"
+
+class DiffusionSolver {
+  thrust::device_vector<Real> *density;
+  thrust::device_vector<Real> *buf;
+
+  thrust::device_vector<Real> buf_0;
+  thrust::device_vector<Real> buf_1;
+
+  
+  void initial_condition ();
+  void boundary_condition ();
+
+  double current_time_;
+public:
+  DiffusionSolver();
+  double current_time () { return current_time_; }
+  void proceed (const Real integral_time);
+  void dump (std::ostream&);
+};

@@ -1,0 +1,37 @@
+task :default => :link
+
+require 'rake/clean'
+require 'nushio_script/rake'
+
+
+
+desc 'Create symbolic links'
+task :link  
+
+test_dirs = `find test/ -name Rakefile`.split(/\n/).map{|str|File.dirname(str)}
+app_dirs = `find application/ -name Rakefile`.split(/\n/).map{|str|File.dirname(str)}
+
+
+test_dirs.each{|dir|
+  recurse(dir, [:build, :test, :test_all, :test_force, :clean, :clobber])
+}
+app_dirs.each{|dir|
+  recurse(dir, [:build, :clean, :clobber])
+}
+
+(test_dirs+app_dirs).each{|dir|
+  ['library', 'nushio_script'].each{|component|
+    sfn = "#{dir}/#{component}"
+    #CLOBBER.include(sfn)
+    task :clobber do
+      sh "rm #{sfn}"
+    end
+    task :link => sfn 
+    file sfn do |t|
+      sh "ln -s $PWD/#{component} #{sfn}"
+    end
+  }
+}
+
+
+

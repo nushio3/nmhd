@@ -1,0 +1,24 @@
+#include "library/direction.h"
+#include "simulation_config.h"
+
+const Real kDiffusionCoefficient = 1.0;
+
+__device__ Real initial_density (Triplet<Real> r) {
+  const Real sigma = 0.05f;
+  const Triplet<Real> origin(-0.4f, -0.4f, 0);
+  return powf(2.0f * kPi, -1.5f) * powf(sigma, -3.0f) *
+    expf(- norm(r - origin) / (2.0f * powf(sigma, 2.0f)));
+}
+
+#include "library/diffusion_solver.inl"
+
+void DiffusionSolver::dump (std::ostream& ostr) {
+  PositioningSetup posser(Triplet<Real>(kGlobalCornerX,kGlobalCornerY,kGlobalCornerZ));
+  for (int addr = 0; addr < kSize; ++addr) {
+    RCo<7> o(addr);
+    if (o[Z] == kSizeZ/2) {
+      ostr << o.position(posser) << " " << (*density)[addr] << std::endl;
+    }
+  }
+}
+

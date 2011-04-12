@@ -1,0 +1,16 @@
+require 'nushio_script/rake'
+require 'rake/clean'
+
+cinclude 'simulation_config.h' => 'library/direction.h'
+cinclude 'library/crystal.h' => 'simulation_config.h' 
+
+
+['basic_test.cu', 'gpu_test.cu'].each{|fn|
+  cinclude fn => 'library/crystal.h'
+  cinclude fn => 'simulation_config.h'
+}
+
+
+gtest('basic', ['basic_test.cu', 'library/mersenne.cpp'])
+
+gtest('gpu', ['gpu_test.cu', 'library/mersenne.cpp'])

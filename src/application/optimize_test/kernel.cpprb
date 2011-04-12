@@ -1,0 +1,38 @@
+/*"
+  require 'nushio_script/optimization'
+
+  Optimization::optimize{ |optimizer|
+  puts "*/
+
+#include <unistd.h>
+
+#include "kernel.h"
+
+int kernel () {
+  sleep(1);
+  /*" unless optimizer.boolean('first_switch')
+    puts "*/
+  sleep(3);
+  /*" end
+
+    a = optimizer.list('mid_is_best', [-2, -1, 0, 1, 2])
+    puts "*/
+  sleep(#{a*a});
+
+
+  /*" 10.times{|i| puts "*/
+  usleep(kBetaFactor#{i});
+  /*"}
+    
+    c = optimizer.positive_integer_multiple_of('8_times_this', 8,  8)
+    puts "*/
+  int ret = -1;
+  for (int i = 0; i < #{c}; ++i) {
+    ret = (ret+1) % 8; 
+  }
+  return 6 * ret;
+}
+
+/*"
+  } # end of optimization
+  "*/

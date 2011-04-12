@@ -1,0 +1,5 @@
+require 'nushio_script/rake'
+require 'rake/clean'
+
+gtest('mersenne', ['mersenne_test.cpp', 'library/mersenne.cpp'])
+gtest('thrust_vector', ['thrust_vector_test.cpp', 'thrust_vector_test_detail.cu'])

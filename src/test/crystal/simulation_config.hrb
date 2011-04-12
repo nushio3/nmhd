@@ -1,0 +1,6 @@
+/*"
+  require "nushio_script/simulation_config"
+   Config.generate! "*/
+const int kSizeX = 20;
+const int kSizeY = 20;
+

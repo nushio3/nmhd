@@ -1,0 +1,1054 @@
+/*
+  require 'nushio_script/crystal'
+  require 'simulation_config_extern'
+  require 'nushio_script/optimization'
+  require 'nushio_script/detect_machine'
+
+  case Machine
+  when :tsubame
+  $defo_grid_0 = 128
+  $defo_block_0 = 256
+  when :degima
+  $defo_grid_0 = 128
+  $defo_block_0 = 60
+  when :momigi
+  $defo_grid_0 = 128
+  $defo_block_0 = 128
+  else
+  $defo_grid_0 = 32
+  $defo_block_0 = 32
+  end
+  
+  Optimization::optimize{ |optimizer|
+
+  def optimizer.kernel_call(defo_grid = $defo_grid_0, defo_block = $defo_block_0)
+  @kernel_call_counter ||= 0
+  grid_dim = positive_integer_multiple_of("grid_dim_#{@kernel_call_counter}", defo_grid, 16)
+  thre_dim = positive_integer_multiple_of("thread_dim_#{@kernel_call_counter}", defo_block, 16)
+
+  STDERR.puts "<<<#{grid_dim} , #{thre_dim}>>>"
+  
+  @kernel_call_counter += 1
+  "<<<#{grid_dim}, #{thre_dim}>>>"
+  end
+  
+  def optimizer.loop_fusion(addr = 'addr')
+  @loop_fusion_counter ||= 0
+  @loop_fusion_counter += 1
+  defo = ''
+  if addr==:o
+  defo = 'RCo<7> o(addr);'; addr = 'addr'
+  end
+  if boolean("fusion_#{@loop_fusion_counter}", true) ; ''
+  else; '} CRYSTAL_MAP(' + addr + '){' + defo ; end
+  end
+
+
+  def trace (msg = 'trace point')
+    return ''
+    $trace_counter ||= 0
+    $trace_counter += 1
+    return   'std::cerr << "' + msg + ' ' + $trace_counter.to_s + '" << std::endl;'
+  end
+
+  
+  puts "*/
+#include "simulation_config.h"
+
+
+#include "library/mhd_solver.h"
+#include "library/get_time.h"
+#include "library/math.h"
+
+
+
+#include <thrust/extrema.h>
+#include <thrust/transform.h>
+
+
+MHDSolver::MHDSolver (LocalSetup &local_setup) :
+  local_setup_(local_setup),
+  
+  /*" i = -1; puts "*/
+  density_(raw(buffer_[#{i+=1}])), velocity_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  pressure_(raw(buffer_[#{i+=1}])), magnet_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  energy_(raw(buffer_[#{i+=1}])), momentum_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])) ,
+
+  cfl_time_(raw(buffer_[#{i+=1}])),
+
+  density_pace_(raw(buffer_[#{i+=1}])), momentum_pace_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  energy_pace_(raw(buffer_[#{i+=1}])), magnet_pace_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  
+  density_flux_(raw(buffer_[#{i+=1}])), momentum_flux_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  energy_flux_(raw(buffer_[#{i+=1}])), magnet_flux_ey_(raw(buffer_[#{i+=1}])), magnet_flux_ez_(raw(buffer_[#{i+=1}])),
+
+  density_predictor_(raw(buffer_[#{i+=1}])), velocity_predictor_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  pressure_predictor_(raw(buffer_[#{i+=1}])), magnet_predictor_(raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}]),raw(buffer_[#{i+=1}])),
+  
+  // buffer_ will be constructed *earlier* than above elements
+  buffer_(#{i+1}, thrust::device_vector<Real>(kSize)),
+  host_buffer_(kSize),
+  mpi_buffer_initialized(false)  
+{
+  for (int i = 0; i < buffer_.size(); ++i) {
+    Real *p = raw(buffer_[i]);
+    buffer_dict_[p] = i;
+  }
+}
+
+__global__ void initial_condition_kernel
+(PositioningSetup pos_setup, BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    set_initial_condition
+      (pos_setup, o, density, velocity, pressure, magnet);
+  }
+}
+void MHDSolver::initial_condition () {
+  initial_condition_kernel #{optimizer.kernel_call()}
+  (local_setup().positioning_setup() , density_, velocity_, pressure_, magnet_);
+}
+
+__global__ void boundary_condition_kernel
+(PositioningSetup pos_setup, BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    set_boundary_condition
+      (pos_setup, o, density, velocity, pressure, magnet);
+  }
+}
+void MHDSolver::boundary_condition () {
+  boundary_condition_kernel #{optimizer.kernel_call()}
+    (local_setup().positioning_setup(), density_, velocity_, pressure_, magnet_);  
+}
+
+/*"
+  interpolate_stencil = nil
+  
+  case SpaceInterpolation
+  when :piecewiseconst1
+    interpolate_stencil = 2
+    puts "*/
+__device__ void interpolate(const Real x0, const Real x1, Real &left, Real &right) {
+  left  = x0;
+  right = x1;
+}
+/*"
+  when :minbee2
+    interpolate_stencil = 4
+     puts "*/
+__device__ Real absolute_smaller(Real a, Real b) {
+  return a*b<=0
+    ? 0
+    : absR(a) < absR(b)
+    ? a : b;
+}
+
+__device__ void interpolate(const Real x0, const Real x1, const Real x2, const Real x3, Real &left, Real &right) {
+  const Real d01 = x1-x0;
+  const Real d12 = x2-x1;
+  const Real d23 = x3-x2;
+  const Real d1 = absolute_smaller(d01,d12);
+  const Real d2 = absolute_smaller(d12,d23);
+  left  = x1 + d1/2;
+  right = x2 - d2/2;
+}
+/*"
+  else
+  throw "unknown interpolation method :#{SpaceInterpolation}"
+  end
+
+  throw 'interpolate stencil size must be an even number ' unless interpolate_stencil % 2 == 0
+  
+   puts "*/
+
+
+
+
+#ifdef USE_MPI
+
+/*"
+  comm_vars = ['density_', 'velocity_[X]', 'velocity_[Y]', 'velocity_[Z]',
+  'pressure_', 'magnet_[X]', 'magnet_[Y]', 'magnet_[Z]']
+
+  comm_vars_short = comm_vars.map{|var|
+  var.gsub(/\W/, '_').split(/\_+/).join('_').downcase
+  }
+  
+  def redundantSync ()
+    return 'cudaThreadSynchronize(); //Redundant?' + "\n" + trace()
+  end
+  
+  puts "*/
+
+__global__ void communicate_gather_kernel_y
+(int displacement_int_inc, Real displacement_real_inc, Real relative_velocity_inc,
+ int displacement_int_dec, Real displacement_real_dec, Real relative_velocity_dec,
+
+ Real *buf_inc, Real *buf_dec, #{comm_vars_short.map{|var| 'Real *' + var}.join(', ')} ) {
+  const int kUnitSizeY = gSizeX * gMarginSizeY * gSizeZ;
+  /*" comm_vars_short.length.times{ |i| var = comm_vars_short[i]
+    puts "*/
+
+  /*" unless ConfigOptions[:shearing_boundary]
+    puts "*/
+  CUSTOM_CRYSTAL_MAP(addr, kUnitSizeY) {
+    int sx, sy, sz;
+    depack(addr, gSizeX, gMarginSizeY , sx, sy ,sz);
+    buf_inc[#{i} * kUnitSizeY + addr] = #{var}[ enpack(gSizeX, gSizeY, sx, gSizeY - 2 * gMarginSizeY + sy, sz) ];
+    buf_dec[#{i} * kUnitSizeY + addr] = #{var}[ enpack(gSizeX, gSizeY, sx, gMarginSizeY + sy, sz) ];
+  }
+  /*" else
+    puts "*/
+  CUSTOM_CRYSTAL_MAP(addr, kUnitSizeY) {
+    int sx, sy, sz;
+    depack(addr, gSizeX, gMarginSizeY , sx, sy ,sz);
+    int inc_x0 = (sx + displacement_int_inc    ) % gSizeX;
+    int inc_x1 = (sx + displacement_int_inc + 1) % gSizeX;
+    int dec_x0 = (sx - displacement_int_dec - 1  + gSizeX) % gSizeX;
+    int dec_x1 = (sx - displacement_int_dec      + gSizeX) % gSizeX;
+    Real val_inc0 = #{var}[ enpack(gSizeX, gSizeY, inc_x0, gSizeY - 2 * gMarginSizeY + sy, sz) ];
+    Real val_inc1 = #{var}[ enpack(gSizeX, gSizeY, inc_x1, gSizeY - 2 * gMarginSizeY + sy, sz) ];
+    Real val_dec0 = #{var}[ enpack(gSizeX, gSizeY, dec_x0, gMarginSizeY + sy, sz) ];
+    Real val_dec1 = #{var}[ enpack(gSizeX, gSizeY, dec_x1, gMarginSizeY + sy, sz) ];
+    buf_inc[#{i} * kUnitSizeY + addr] = (Real(1)-displacement_real_inc) * val_inc0 + displacement_real_inc * val_inc0 
+      #{var=='velocity_x' ? '-relative_velocity_inc' : ''} ;
+    buf_dec[#{i} * kUnitSizeY + addr] = displacement_real_dec * val_dec0 + (Real(1)-displacement_real_dec) * val_dec0 
+      #{var=='velocity_x' ? '+relative_velocity_dec' : ''} ;
+  }
+  /*" end
+    }
+    puts "*/
+}
+
+__global__ void communicate_scatter_kernel_y
+(Real *buf_inc, Real *buf_dec, #{comm_vars_short.map{|var| 'Real *' + var}.join(', ')} ) {
+  const int kUnitSizeY = gSizeX * gMarginSizeY * gSizeZ;
+  /*" comm_vars_short.length.times{ |i| var = comm_vars_short[i]
+    puts "*/
+  CUSTOM_CRYSTAL_MAP(addr, kUnitSizeY) {
+    int sx, sy, sz;
+    depack(addr, gSizeX, gMarginSizeY, sx, sy ,sz);
+    #{var}[ enpack(gSizeX, gSizeY, sx, sy, sz) ] = buf_inc[#{i} * kUnitSizeY + addr];
+    /*"
+      puts 'if (sy > 0)' if var == 'magnet_y'
+      puts "*/
+    #{var}[ enpack(gSizeX, gSizeY, sx, gSizeY - gMarginSizeY + sy, sz) ] = buf_dec[#{i} * kUnitSizeY + addr];
+  }
+  /*" }
+
+    
+    puts "*/  
+}
+
+void MHDSolver::relative_displacement (PreciseReal t, int index, Real &normalized_displacement, int &int_displacement, Real &minor_displacement) {
+  /*" unless ConfigOptions[:shearing_boundary]
+    puts "*/
+  int_displacement = 0;
+  minor_displacement = 0;
+  /*" else
+    puts "*/
+  PreciseReal displacement0 = initial_displacement(index) + t * relative_velocity(index);
+  int folding_number = int(floor(displacement0 / kExtentX));
+  PreciseReal displacement1 = displacement0 - folding_number * kExtentX;
+  normalized_displacement = displacement1;
+  int_displacement = int(floor(displacement1 / kDX));
+  minor_displacement = displacement1 / kDX - int_displacement;
+  /*" end
+    puts "*/  
+}
+
+void MHDSolver::update_displacement () {
+  /*" if ConfigOptions[:shearing_boundary]
+    puts "*/
+  int displacement_int; Real normalized_displacement, displacement_real;
+  relative_displacement(global_setup().current_time(), local_setup().mpi_rank_3d()[Y],
+			  normalized_displacement, displacement_int, displacement_real);
+  local_setup().relative_displacement() = normalized_displacement;
+  local_setup().relative_velocity() = relative_velocity(local_setup().mpi_rank_3d()[Y]);
+  /*" end
+    puts "*/
+}
+
+
+/*" unless ConfigOptions[:shearing_boundary]
+    puts "*/
+PreciseReal relative_velocity (int index) {
+  return index;
+}
+/*" end
+  puts "*/
+
+
+void MHDSolver::communicate () {
+  
+  #{trace}
+  static int message_tag = 0;
+  
+  const int kUnitSizeY = kSizeX * kMarginSizeY * kSizeZ;
+  const int kUnitSizeZ = kSizeX * kSizeY * kMarginSizeZ;
+  const int kTotalSizeY = kUnitSizeY * #{comm_vars.length};
+  const int kTotalSizeZ = kUnitSizeZ * #{comm_vars.length};
+  if (!mpi_buffer_initialized) {
+    #{trace}
+    mpi_buffer_y_inc_send.resize(kTotalSizeY);
+    mpi_buffer_y_inc_recv.resize(kTotalSizeY);
+    mpi_buffer_y_inc_device.resize(kTotalSizeY);
+    mpi_buffer_y_dec_send.resize(kTotalSizeY);
+    mpi_buffer_y_dec_recv.resize(kTotalSizeY);
+    mpi_buffer_y_dec_device.resize(kTotalSizeY);
+
+    mpi_buffer_z_inc_send.resize(kTotalSizeZ);
+    mpi_buffer_z_inc_recv.resize(kTotalSizeZ);
+    mpi_buffer_z_dec_send.resize(kTotalSizeZ);
+    mpi_buffer_z_dec_recv.resize(kTotalSizeZ);
+    mpi_buffer_initialized = true;
+    #{trace}
+  }
+
+  const int my_rank_x = local_setup().mpi_rank_3d()[X];
+  const int my_rank_y = local_setup().mpi_rank_3d()[Y];
+  const int my_rank_z = local_setup().mpi_rank_3d()[Z];
+  /*"  Xyz{ |dir,cdir|
+    next if dir=='x'
+    puts "*/
+  const int my_rank_#{dir}_inc = (my_rank_#{dir} + 1) % kParallelSize#{cdir};
+  const int my_rank_#{dir}_dec = (my_rank_#{dir} + kParallelSize#{cdir} - 1) % kParallelSize#{cdir};
+  /*" }
+    puts "*/
+  const int rank_y_inc = (my_rank_z * kParallelSizeY + my_rank_y_inc) * kParallelSizeX + my_rank_x;
+  const int rank_y_dec = (my_rank_z * kParallelSizeY + my_rank_y_dec) * kParallelSizeX + my_rank_x;
+  const int rank_z_inc = (my_rank_z_inc * kParallelSizeY + my_rank_y) * kParallelSizeX + my_rank_x;
+  const int rank_z_dec = (my_rank_z_dec * kParallelSizeY + my_rank_y) * kParallelSizeX + my_rank_x;
+
+  if (global_setup().generation() <= 0)
+    local_setup().ofs_log() << "communicating neighbours of ("
+                          << local_setup().mpi_rank() << ") = "
+                          << rank_y_dec << " "
+                          << rank_y_inc << " "
+                          << rank_z_dec << " "
+                          << rank_z_inc << std::endl;
+  
+  /*"
+
+    Xyz{ |comm_dir,comm_cdir| next if comm_dir=='x'
+    
+    puts "*/
+  if (kMarginSize#{comm_cdir} > 0) {
+    //// //// Begin Communications in #{comm_cdir} Direction //// ////
+
+    
+    /*"
+    
+    unit_size = "kUnitSize#{comm_cdir}"
+    total_size = "kTotalSize#{comm_cdir}"
+    memcpy_unit_size = "sizeof(Real) * kUnitSize#{comm_cdir}"
+    memcpy_total_size = "sizeof(Real) * kTotalSize#{comm_cdir}"
+
+    if  'y' == comm_dir
+
+    puts "*/
+    #{trace}
+
+    {
+      int displacement_int_inc, displacement_int_dec;
+      Real displacement_real_inc, displacement_real_dec;
+      Real normalized_displacement_inc, normalized_displacement_dec;
+      
+      relative_displacement(global_setup().current_time(), my_rank_y,  normalized_displacement_inc, displacement_int_inc, displacement_real_inc);
+      relative_displacement(global_setup().current_time(), rank_y_dec, normalized_displacement_dec, displacement_int_dec, displacement_real_dec);
+      
+      communicate_gather_kernel_#{comm_dir}  #{optimizer.kernel_call()}
+      (
+       displacement_int_inc, displacement_real_inc, relative_velocity(my_rank_y), 
+       displacement_int_dec, displacement_real_dec, relative_velocity(rank_y_dec),
+       
+       raw(mpi_buffer_#{comm_dir}_inc_device),
+       raw(mpi_buffer_#{comm_dir}_dec_device),
+       #{comm_vars.map{|var| var + '.ptr()'}.join(', ')}
+       );
+    }
+    #{trace}
+    cudaMemcpy(raw(mpi_buffer_#{comm_dir}_inc_send),
+	       raw(mpi_buffer_#{comm_dir}_inc_device),
+	       #{memcpy_total_size},
+	       cudaMemcpyDeviceToHost);
+    #{redundantSync}
+    cudaMemcpy(raw(mpi_buffer_#{comm_dir}_dec_send),
+	       raw(mpi_buffer_#{comm_dir}_dec_device),
+	       #{memcpy_total_size},
+	       cudaMemcpyDeviceToHost);
+    #{redundantSync}
+    /*"
+
+    elsif 'z' == comm_dir
+
+    comm_vars.length.times{|i|
+    var = comm_vars[i]
+    puts "*/
+  // bring data to be communicated in #{comm_cdir} direction from GPU to CPU
+  
+  cudaMemcpy(raw(mpi_buffer_#{comm_dir}_inc_send) + #{i} * #{unit_size},
+	     #{var}.ptr() + (kSize - 2 * #{unit_size}),
+	     #{memcpy_unit_size},
+	     cudaMemcpyDeviceToHost);
+  
+  #{redundantSync}
+  cudaMemcpy(raw(mpi_buffer_#{comm_dir}_dec_send) + #{i} * #{unit_size},
+	     #{var}.ptr() + #{unit_size},
+	     #{memcpy_unit_size},
+	     cudaMemcpyDeviceToHost);
+  #{redundantSync} 
+  /*" }
+    
+    end #comm_dir branching
+    
+    puts "*/
+  cudaThreadSynchronize();
+  
+  MPI_Barrier(MPI_COMM_WORLD); // wait until all the nodes are ready to communicate
+  {
+    /*"
+      [['inc', 'dec'], ['dec', 'inc']].each{ |way, otherway|
+      puts "*/
+    //// initiate rank-#{way}reasing communication for #{comm_cdir} direction
+    MPI_Request send_req_#{way}, recv_req_#{way};
+    MPI_Status send_stat_#{way}, recv_stat_#{way};
+
+    #{trace}
+    MPI_Irecv(raw(mpi_buffer_#{comm_dir}_#{way}_recv), kTotalSize#{comm_cdir}, kMPIDatatypeReal,
+	      rank_#{comm_dir}_#{otherway}, message_tag, MPI_COMM_WORLD, &send_req_#{way});
+    MPI_Isend(raw(mpi_buffer_#{comm_dir}_#{way}_send), kTotalSize#{comm_cdir}, kMPIDatatypeReal,
+	      rank_#{comm_dir}_#{way}, message_tag, MPI_COMM_WORLD, &recv_req_#{way});
+    ++message_tag;
+    /*"
+      }
+
+    
+      [['inc', 'dec'], ['dec', 'inc']].each{ |way, otherway|
+      puts "*/
+    //// wait until completion of the access
+    #{trace}
+    MPI_Wait(&recv_req_#{way}, &recv_stat_#{way});
+    MPI_Wait(&send_req_#{way}, &send_stat_#{way});
+    #{trace}
+    /*" }
+      puts "*/
+  }
+  /*"
+
+
+    if  'y' == comm_dir
+
+    puts "*/
+  cudaMemcpy(raw(mpi_buffer_#{comm_dir}_inc_device),
+	     raw(mpi_buffer_#{comm_dir}_inc_recv),
+	     #{memcpy_total_size},
+	     cudaMemcpyHostToDevice);
+  #{redundantSync}
+  cudaMemcpy(raw(mpi_buffer_#{comm_dir}_dec_device),
+	     raw(mpi_buffer_#{comm_dir}_dec_recv),
+	     #{memcpy_total_size},
+	     cudaMemcpyHostToDevice);
+  #{redundantSync}
+  
+  communicate_scatter_kernel_#{comm_dir}  #{optimizer.kernel_call()}
+  (raw(mpi_buffer_#{comm_dir}_inc_device),
+   raw(mpi_buffer_#{comm_dir}_dec_device),
+   #{comm_vars.map{|var| var + '.ptr()'}.join(', ')}
+   );
+  /*"
+
+
+    elsif 'z' == comm_dir
+
+    
+    comm_vars.length.times{|i|
+    var = comm_vars[i]
+    puts "*/
+  // bring data that was communicated in #{comm_cdir} direction from CPU to GPU
+  cudaMemcpy(#{var}.ptr(),
+	     raw(mpi_buffer_#{comm_dir}_inc_recv) + #{i} * #{unit_size},
+	     #{memcpy_unit_size},
+	     cudaMemcpyHostToDevice);
+  #{redundantSync}
+  cudaMemcpy(#{var}.ptr() + (kSize - 1 * kUnitSizeZ),
+	     raw(mpi_buffer_#{comm_dir}_dec_recv) + #{i} * #{unit_size},
+	     #{memcpy_unit_size},
+	     cudaMemcpyHostToDevice);
+  #{redundantSync}
+  /*" }
+
+
+    
+    end #comm_dir
+
+    puts "*/
+  //// //// End Communications in #{comm_cdir}(#{comm_dir}) Direction //// ////
+  }
+  /*"
+    } # end of Xyz{ |comm_dir,comm_cdir|
+    puts "*/
+  
+}
+#endif //#ifdef USE_MPI
+
+template <class Direction>
+__device__ Real cfl_condition_inner
+(const Direction ex, const RCo<7> &o,
+ BodyScalar density, BodyVector velocity, BodyScalar pressure, Real b2) {
+  const Real len = dR(ex);
+  const Real speed = absR(velocity[ex][o] + sqrtR((kGamma * pressure[o] + b2) / density[o]));
+  return kCflFactor * len / speed;
+}
+__global__ void cfl_condition_kernel
+(BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet,
+ const Real max_time,  BodyScalar cfl_time) {
+  CRYSTAL_MAP(addr) {
+    Real min_time = max_time;
+    RCo<7> o(addr);
+    const Real b2 =
+      /*" puts XYZ{|d| "*/ 
+      max(sq(magnet[#{d}][o-H#{d}]), sq(magnet[#{d}][o+H#{d}]))
+      /*" }.join('+'); puts "*/;
+      
+    /*" XYZ{|cdir| puts "*/ 
+    min_time = min(min_time, cfl_condition_inner(#{cdir}, o, density, velocity, pressure, b2));
+    /*" }
+      puts "*/
+    cfl_time[o] = min_time;
+  }
+}
+
+__global__ void clear_pace_kernel
+(BodyScalar density_pace, BodyVector momentum_pace, BodyScalar energy_pace, FaceVector magnet_pace) {
+  CRYSTAL_MAP(addr) {
+    const RCo<7> o(addr);
+    density_pace[o] = 0;
+    /*" XYZ{|d| puts "*/
+    momentum_pace[#{d}][o] = 0;
+    /*"}; puts "*/
+    energy_pace[o] = 0;
+    /*" XYZ{|d| puts "*/
+    magnet_pace[#{d}][o-H#{d}] = 0;
+    /*"}; puts "*/
+  }
+}
+
+
+/*"
+  # to add an variable to be interpolaterd and then input to Riemann solver,
+  # specify a lambda-exp that takes a coordinate and returns how to obtain the
+  # variable from the coordinate.
+  # if multiple variables are to be interpolated and then averaged,
+  # give a list of lambda-exp instead of one lambda-exp.
+
+  riemann_variables = []
+  riemann_variables << [lambda{|o| "density[#{o}]"}]
+  riemann_variables << [lambda{|o| "velocity[ex][#{o}]"}]
+  riemann_variables << [lambda{|o| "velocity[ey][#{o}]"}]
+  riemann_variables << [lambda{|o| "velocity[ez][#{o}]"}]
+  riemann_variables << [lambda{|o| "pressure[#{o}]"}]
+
+  riemann_variables << [lambda{|o| "magnet[ey][#{o}-hey]"}, lambda{|o| "magnet[ey][#{o}+hey]"}]
+  riemann_variables << [lambda{|o| "magnet[ez][#{o}-hez]"}, lambda{|o| "magnet[ez][#{o}+hez]"}]
+
+  
+     puts "*/
+
+
+#include "library/hlld.inl"
+
+template<class EX>
+__global__
+void calc_flux_kernel
+(EX ex, Real dt,
+ BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet,
+ typename BodyScalar::Shift<EX::mask>::t density_flux ,
+ Triplet<typename BodyScalar::Shift<EX::mask>::t> momentum_flux ,
+ typename BodyScalar::Shift<EX::mask>::t energy_flux,
+ typename BodyScalar::Shift<EX::mask>::t magnet_flux_ey,
+ typename BodyScalar::Shift<
+
+ EX::mask>::t magnet_flux_ez
+ ) {
+  typename EX::Next ey; typename EX::Prev ez;
+  typename EX::Half hex; typename EX::Half::Next hey; typename EX::Half::Prev hez;
+  CRYSTAL_MAP(addr) {
+    const RCo<7^EX::mask> center(addr);
+    /*"
+      interpolate_coords = (0...interpolate_stencil).map{|i|
+      calc = if i < interpolate_stencil /2
+      '- hex' + ' - ex' * (interpolate_stencil /2 - i - 1)
+      else
+      '+ hex' + ' + ex' * (i - interpolate_stencil /2)      
+      end
+      tag = "c#{i}"
+      puts "*/
+    const RCo<7> #{tag} = center #{calc};
+    /*"
+      tag
+      }
+      
+      riemann_solver_args = riemann_variables.map{|fs|
+
+      tag = fs[0]['@'].gsub(/\@.*$/,'').gsub(/[^\w]/,'_').gsub('__', '_')
+      variable_left = tag + 'left'
+      variable_right = tag + 'right'
+      
+      interpolate_args = interpolate_coords.map{|c|
+      if fs.length==1 ; fs[0][c]
+      else ; "average(" + fs.map{|f| f[c] }.join(',') + ")"
+      end
+      }
+      
+      puts "*/ Real #{variable_left}, #{variable_right};
+    interpolate(#{interpolate_args.join(',')}, #{variable_left}, #{variable_right});
+    /*"
+
+      
+      [variable_left, variable_right]
+      }
+      puts "*/
+    
+    /*" if ConfigOptions[:external_acceleration]
+      puts "*/
+    Real mesh_boundary_velocity = Real(0.5) * dt *
+      external_acceleration(density, velocity, pressure, magnet, center)[ex];
+    velocity_ex_left  += mesh_boundary_velocity;
+    velocity_ex_right += mesh_boundary_velocity;
+    
+    /*" end
+      puts "*/
+
+
+    
+    hlld_flux
+      (magnet[ex][center],
+       
+       #{riemann_solver_args.flatten.join(", ")},
+       
+       density_flux[center],
+       momentum_flux[ex][center], momentum_flux[ey][center], momentum_flux[ez][center],
+       energy_flux[center],
+       magnet_flux_ey[center], magnet_flux_ez[center]);
+  }
+}
+
+/*
+  the EX direction flux of the EY component of the magnetic field at coordinate <corner>.
+ */
+template<class EX, class EY, class Coord> __device__ Real corner_magnet_flux
+(EX ex, EY ey, Coord corner, BodyVector wind,
+ typename BodyScalar::Shift<EX::mask>::t magnet_flux_ey) {
+  typename EX::Half hex; typename EY::Half hey;
+  Real sum_wind = /*" puts PlusMinus(2){|op1, op2| "*/ wind[ey][corner#{op1}hex#{op2}hey] /*" }.join('+') ; puts "*/;
+  const Real f0 = magnet_flux_ey[corner - hey];
+  const Real f1 = magnet_flux_ey[corner + hey];
+  return sum_wind > 0
+    ? f0
+    : sum_wind < 0
+    ? f1
+    : average(f0, f1);
+}
+
+/*
+  the EX direction flux of the EY component of the magnetic field at coordinate <face>,
+  differenciated in HEX1 direction.
+ */
+template<class EX, class EY, class HEX1, class Coord> __device__ Real magnet_flux_difference
+(EX ex, EY ey, HEX1 hex1, Coord face,
+ BodyVector wind, typename BodyScalar::Shift<EX::mask>::t magnet_flux_ey
+ ) {
+  return
+    + corner_magnet_flux(ex, ey, face + hex1, wind, magnet_flux_ey)
+    - corner_magnet_flux(ex, ey, face - hex1, wind, magnet_flux_ey);
+}
+
+template<class EX> __global__ void add_flux_kernel
+(EX ex,
+ BodyVector wind,
+ typename BodyScalar::Shift<EX::mask>::t density_flux ,
+ Triplet<typename BodyScalar::Shift<EX::mask>::t> momentum_flux ,
+ typename BodyScalar::Shift<EX::mask>::t energy_flux,
+ typename BodyScalar::Shift<EX::mask>::t magnet_flux_ey,
+ typename BodyScalar::Shift<EX::mask>::t magnet_flux_ez,
+ BodyScalar density_pace, BodyVector momentum_pace, BodyScalar energy_pace, FaceVector magnet_pace
+ ) {
+  typedef typename EX::Next EY; typedef typename EX::Prev EZ;
+  EY ey; EZ ez;
+  typename EX::Half hex; typename EY::Half hey; typename EZ::Half hez;
+  const Real magic_factor = 0.5f;
+  const Real black_magic_factor = 1.0f;
+
+  CRYSTAL_MAP(addr) {
+    const RCo<7> center(addr);
+    const RCo<7^EX::mask> left  = center - hex;
+    const RCo<7^EX::mask> right = center + hex;
+    
+    density_pace[center] += (density_flux[left] - density_flux[right]) / dR(ex);
+    /*" XYZ{|d| puts "*/
+    momentum_pace[#{d}][center] += (momentum_flux[#{d}][left] - momentum_flux[#{d}][right]) / dR(ex);
+    /*" } ; puts "*/
+    energy_pace[center] += (energy_flux[left] - energy_flux[right]) / dR(ex);
+
+    #{optimizer.loop_fusion()}
+    
+    const RCo<7^EY::mask> oy(addr);
+    magnet_pace[ey][oy] -= magic_factor *
+      magnet_flux_difference(ex, ey, hex, oy, wind, magnet_flux_ey) / dR(ex);
+
+    #{optimizer.loop_fusion()}
+    
+    const RCo<7^EZ::mask> oz(addr);
+    magnet_pace[ez][oz] -= magic_factor *
+      magnet_flux_difference(ex, ez, hex, oz, wind, magnet_flux_ez) / dR(ex);
+
+    #{optimizer.loop_fusion()}
+    
+    const RCo<7^EX::mask> ox(addr);
+    magnet_pace[ex][ox] += magic_factor * black_magic_factor * 
+      (magnet_flux_difference(ex, ey, hey, ox, wind, magnet_flux_ey) / dR(ey) +
+       magnet_flux_difference(ex, ez, hez, ox, wind, magnet_flux_ez) / dR(ez) );
+  }
+}
+
+
+// debug
+Real debug_max_diff(thrust::device_vector<Real> xs, thrust::device_vector<Real> ys) {
+  Real ans = 0;
+  for (int i = 0; i < xs.size(); ++i) {
+    ans = max(ans, absR(xs[i] - ys[i]));
+  }
+  return ans;
+}
+
+Real debug_min(thrust::device_vector<Real> xs) {
+  Real ans = xs[0];
+  for (int i = 0; i < xs.size(); ++i) {
+    ans = min(ans, xs[i]);
+  }
+  return ans;
+}
+
+
+void MHDSolver::add_flux_kernel_caller
+(Real dt, BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet,
+ BodyScalar density_pace, BodyVector momentum_pace, BodyScalar energy_pace, FaceVector magnet_pace) {
+  /*" XYZ{|d| puts "*/
+  {
+    Mesh<7^#{d}Axis::mask, Real> density_flux = density_flux_.shift(#{d}) ;
+    Triplet<Mesh<7^#{d}Axis::mask,Real> > momentum_flux
+			 (/*" puts XYZ{|d2| "*/ momentum_flux_[#{d2}].shift(#{d}) /*" }.join(','); puts "*/);
+    Mesh<7^#{d}Axis::mask, Real> energy_flux = energy_flux_.shift(#{d}) ;
+    Mesh<7^#{d}Axis::mask, Real> magnet_flux_ey =  magnet_flux_ey_.shift(#{d});
+    Mesh<7^#{d}Axis::mask, Real> magnet_flux_ez =  magnet_flux_ez_.shift(#{d});
+
+    calc_flux_kernel #{optimizer.kernel_call()}
+      (#{d}, dt, density, velocity, pressure, magnet,
+       density_flux, momentum_flux, energy_flux, magnet_flux_ey, magnet_flux_ez);
+
+    add_flux_kernel #{optimizer.kernel_call()}
+      (#{d},
+       velocity, 
+       density_flux, momentum_flux, energy_flux, magnet_flux_ey, magnet_flux_ez,
+       density_pace, momentum_pace, energy_pace, magnet_pace);
+  }
+/*" }
+  puts "*/
+}
+
+
+__global__ void to_conserved_kernel
+(BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet,
+ BodyVector momentum, BodyScalar energy) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    /*" XYZ{|d| puts "*/
+    momentum[#{d}][o] = density[o] * velocity[#{d}][o];
+    #{optimizer.loop_fusion(:o)}
+    /*" }; puts "*/
+    energy[o] =  pressure[o] / (kGamma-1)
+      + Real(0.5f) * density[o] * (sq(velocity[X][o]) + sq(velocity[Y][o]) + sq(velocity[Z][o]))
+      + Real(0.25f) * (sq(magnet[X][o-HX]) + sq(magnet[X][o+HX]) +
+		       sq(magnet[Y][o-HY]) + sq(magnet[Y][o+HY]) +
+		       sq(magnet[Z][o-HZ]) + sq(magnet[Z][o+HZ]));
+  }
+}
+
+__global__ void to_primitive_kernel
+(BodyScalar density, BodyVector momentum, BodyScalar energy, FaceVector magnet,
+ BodyVector velocity, BodyScalar pressure) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    /*" XYZ{|d| puts "*/
+    velocity[#{d}][o] = momentum[#{d}][o] / density[o];
+    #{optimizer.loop_fusion(:o)}
+    /*" }; puts "*/
+    const Real internal_energy = energy[o]
+      - Real(0.5f) * (sq(momentum[X][o]) + sq(momentum[Y][o]) + sq(momentum[Z][o])) / density[o]
+      - Real(0.25f) * (sq(magnet[X][o-HX]) + sq(magnet[X][o+HX]) +
+		       sq(magnet[Y][o-HY]) + sq(magnet[Y][o+HY]) +
+		       sq(magnet[Z][o-HZ]) + sq(magnet[Z][o+HZ]));
+    pressure[o] = internal_energy * (kGamma-1);
+  }
+}
+
+__global__ void update_kernel
+(Real dt,
+ BodyScalar density_pace, BodyVector momentum_pace, BodyScalar energy_pace, FaceVector magnet_pace,
+ BodyScalar density, BodyVector momentum, BodyScalar energy, FaceVector magnet) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    density[o] += dt * density_pace[o];
+    /*" XYZ{|d| puts "*/
+    momentum[#{d}][o] += dt * momentum_pace[#{d}][o];
+    /*" }; puts "*/
+    energy[o] += dt * energy_pace[o];
+    /*" XYZ{|d| puts "*/
+    magnet[#{d}][o-H#{d}] += dt * magnet_pace[#{d}][o-H#{d}];
+    /*" }; puts "*/
+  }
+}
+
+__global__ void add_pace_kernel
+(Real dt,
+ BodyScalar density_pace, BodyVector momentum_pace, BodyScalar energy_pace, FaceVector magnet_pace,
+ BodyScalar density_old,  FaceVector magnet_old,
+ BodyScalar density_new, BodyVector momentum, BodyScalar energy, FaceVector magnet_new
+ ) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    density_new[o] = density_old[o] + dt * density_pace[o];
+    #{optimizer.loop_fusion(:o)}
+    /*" XYZ{|d| puts "*/
+    momentum[#{d}][o] += dt * momentum_pace[#{d}][o];
+    #{optimizer.loop_fusion(:o)}
+    /*" }; puts "*/
+    energy[o] += dt * energy_pace[o];
+    #{optimizer.loop_fusion(:o)}
+    /*" XYZ{|d| puts "*/
+    magnet_new[#{d}][o-H#{d}] = magnet_old[#{d}][o-H#{d}] + dt * magnet_pace[#{d}][o-H#{d}];
+    #{optimizer.loop_fusion(:o)}
+    /*" }; puts "*/
+  }
+}
+
+__global__ void external_acceleration_kernel
+(Real dt,
+ BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet
+ ) {
+  CRYSTAL_MAP(addr) {
+    RCo<7> o(addr);
+    Triplet<Real> a = external_acceleration(density, velocity, pressure, magnet, o);
+    /*" XYZ{|d| puts "*/
+    velocity[#{d}][o] += dt * a[#{d}];
+    /*" }; puts "*/
+  }
+}
+
+bool MHDSolver::proceed (const Real goal_time, const PreciseReal wallclock_time_limit) {
+  bool break_flag = false;
+  bool timeout = false;
+  bool goal_reached = false;
+  PreciseReal wallclock_begin = get_time<PreciseReal>();
+  
+  //std::cerr << "kMPIDatatypeReal = " << kMPIDatatypeReal << std::endl;
+  //std::cerr << "MPI_REAL = " << MPI_DOUBLE_PRECISION << " " << MPI_REAL << std::endl;
+
+  do {
+    if(monitor()) break;
+    if (wallclock_time_limit > 0 && get_time<PreciseReal>() > wallclock_begin + wallclock_time_limit) {
+      timeout = true;
+    }
+    
+#ifdef USE_MPI
+    communicate();
+#endif
+    Real dt;
+    boundary_condition();
+    cfl_condition_kernel
+      #{optimizer.kernel_call()}
+    (density_, velocity_, pressure_, magnet_, goal_time, cfl_time_);
+    dt = 0.0f;
+    {
+      static thrust::device_vector<Real>::iterator
+	cfl_begin = buffer_dict(cfl_time_).begin(),
+	cfl_end = buffer_dict(cfl_time_).end();
+      thrust::device_vector<Real>::iterator min_it = thrust::min_element(cfl_begin, cfl_end);
+      Real my_dt = *min_it;
+      if (timeout) my_dt = -1;
+#ifdef USE_MPI
+      MPI_Barrier(MPI_COMM_WORLD); // wait until all the nodes are ready
+      MPI_Allreduce(&my_dt, &dt, 1, kMPIDatatypeReal,
+		    MPI_MIN, MPI_COMM_WORLD);
+#else
+      dt = my_dt;
+#endif
+    }
+    if (dt < 0) {
+      timeout = true;
+      goal_reached = false;
+      break;
+    }
+
+    if (local_setup().mpi_rank()==0) std::cerr << current_time() << " " << dt << std::endl;
+    
+    const PreciseReal next_time = current_time() + dt;
+    if (next_time > goal_time) {
+      dt = (goal_time - current_time());
+      break_flag = true; goal_reached = true;
+    }
+
+
+    /*" 
+      # generate a code that integrates from f(bef) to f(aft)
+      # using df/dt(opera).
+      
+      integrator = lambda{|dt, opera, bef, aft|
+      ret = "*/
+
+    //// Zero-Initialize Pace
+    clear_pace_kernel #{optimizer.kernel_call()}
+    (density_pace_, momentum_pace_, energy_pace_, magnet_pace_);
+    
+    //// Calculate Flux and add it to Pace
+    add_flux_kernel_caller
+      (#{dt},
+       density_#{opera}, velocity_#{opera}, pressure_#{opera}, magnet_#{opera},
+       density_pace_, momentum_pace_, energy_pace_, magnet_pace_);
+    
+    //// Convert to Conserved Variables
+    to_conserved_kernel #{optimizer.kernel_call()}
+    (density_#{bef}, velocity_#{bef}, pressure_#{bef}, magnet_#{bef},
+     momentum_, energy_);
+    
+    /*" 
+      if bef==aft
+      ret += "*/
+    //// Overwrite Conserved Variables
+    update_kernel #{optimizer.kernel_call()}
+    (#{dt},
+     density_pace_, momentum_pace_, energy_pace_, magnet_pace_,
+     density_#{aft}, momentum_, energy_, magnet_#{aft});
+    /*" 
+      else
+      ret += "*/
+    //// Add to Conserved Variables
+    add_pace_kernel #{optimizer.kernel_call()}
+    (#{dt},
+     density_pace_, momentum_pace_, energy_pace_, magnet_pace_,
+     density_#{bef}, magnet_#{bef},
+     density_#{aft}, momentum_, energy_, magnet_#{aft});
+    /*" 
+      end
+
+      ret += "*/
+    //// Convert to Primitive Variables
+    to_primitive_kernel #{optimizer.kernel_call()}
+    (density_#{aft}, momentum_, energy_, magnet_#{aft},
+     velocity_#{aft}, pressure_#{aft});
+    /*" 
+
+      if ConfigOptions[:external_acceleration]
+      ret += "*/
+    external_acceleration_kernel #{optimizer.kernel_call()}
+    (#{dt},
+     density_#{aft}, velocity_#{aft}, pressure_#{aft}, magnet_#{aft});
+    /*" end
+
+
+      
+      ret } #integrator
+
+
+      
+      case TimeIntegral
+      when :euler1
+      
+      puts integrator['dt', '', '', '']
+      
+      when :midpoint2
+    
+      puts integrator['dt/2', '', '', 'predictor_']
+      puts integrator['dt', 'predictor_', '', '']
+
+      else
+      throw "unknown time integral method :#{TimeIntegral}"
+      end
+      puts "*/
+      
+    global_setup().proceed(1, dt);
+    /*" if ConfigOptions[:shearing_boundary]
+      puts "*/
+
+    update_displacement();    
+    /*" end
+      puts "*/
+
+    
+  } while(!break_flag);
+
+  return goal_reached;
+}
+
+/*" ['read', 'write'].each{|rw| puts "*/
+bool MHDSolver::#{rw}(std::string filename)  {
+  FILE *fp=fopen(filename.c_str(), "#{rw[0..0]}");
+  if (!fp) return false;
+  
+  /*" XYZ{|d| puts "*/
+  if (!f#{rw}_singlet(fp, kSize#{d})) return false;
+  /*" } ; puts "*/
+  
+  f#{rw}_device(fp,buffer_dict(density_));
+  /*" XYZ{|d| puts "*/
+  f#{rw}_device(fp,buffer_dict(velocity_[#{d}]));
+  /*" } ; puts "*/
+  f#{rw}_device(fp,buffer_dict(pressure_));
+  /*" XYZ{|d| puts "*/
+  f#{rw}_device(fp,buffer_dict(magnet_[#{d}]));
+  /*" } ; puts "*/
+  fclose(fp);
+  return true;
+}
+
+/*" }
+  puts "*/
+
+void MHDSolver::initialize_state () {
+  initial_condition();
+}
+
+void MHDSolver::save_state (std::string tag) {
+  std::string prefix = local_setup().mkdir_prefix(tag);
+  write(prefix + ".bin");
+
+    /*" if ConfigOptions[:shearing_boundary]
+      puts "*/
+  update_displacement();
+  /*" 
+    end
+    puts "*/
+  std::ofstream ofs((prefix + "_setup.txt").c_str());
+  ofs << global_setup() << std::endl
+      << "################" << std::endl
+      << local_setup() << std::endl;
+}
+
+void MHDSolver::load_state (std::string tag) {
+  std::string prefix = local_setup().mkdir_prefix(tag);
+
+  std::ifstream ifs((prefix + "_setup.txt").c_str());
+  ifs >> global_setup_;
+  std::string spacer; ifs >> spacer;
+  ifs >> local_setup_;
+
+  if(!read(prefix + ".bin")) {
+    local_setup().ofs_log() << "error reading file: " << prefix + ".bin" << std::endl;
+  }
+}
+
+/*"
+  } # end of optimization
+  "*/

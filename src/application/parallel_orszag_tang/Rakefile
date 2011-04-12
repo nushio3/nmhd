@@ -1,0 +1,59 @@
+require 'nushio_script/rake'
+require 'nushio_script/detect_machine'
+require 'rake/clean'
+
+cinclude 'simulation_config.h' => 'simulation_config_extern.rb'
+cinclude 'simulation_config.h' => 'library/direction.h'
+cinclude 'library/crystal.h' => 'simulation_config.h' 
+
+cinclude 'library/mhd_solver.h' => 'nushio_script/persistent_pod.h'
+cinclude 'library/mhd_solver.h' => 'simulation_config.h'
+cinclude 'library/mhd_solver.h' => 'simulation_config.h'
+cinclude 'library/mhd_solver.h' => 'library/crystal.h'
+cinclude 'library/mhd_solver.h' => 'library/device_mesh.h'
+cinclude 'library/mhd_solver.h' => 'library/physics_util.h'
+
+cinclude 'library/mhd_solver.inl' => 'library/mhd_solver.h'
+
+cinclude 'mhd_solver.cu' => 'simulation_config.h'
+cinclude 'mhd_solver.cu' => 'library/mhd_solver.h'
+cinclude 'mhd_solver.cu' => 'library/mhd_solver.inl'
+
+cinclude 'main.cu' => 'library/mhd_solver.h'
+
+file 'simulation_config_extern.rb' do
+  sh "tools/generate_config.rb --default"
+end
+CLEAN.include('simulation_config_extern.rb')
+
+opt = RakeOption::new()
+opt.compile << '-arch=sm_20' if Machine==:tsubame
+opt.compile << '--ptxas-options=-v'
+
+if Machine==:tsubame
+  opt.compile << '-I/usr/apps/openmpi/1.4.2/intel/include/' 
+  opt.compile << '-g' 
+  opt.linker = 'mpicxx'
+  opt.link << ['-lcudart', '-L/opt/cuda/3.1/lib64/'] 
+end
+
+if Machine==:nushiomac
+  opt.linker = 'mpicxx'
+  opt.link << ['-lcudart', '-L/usr/local/cuda/lib/'] 
+end
+
+if Machine==:degima
+  opt.compile << '-I/export/opt/openmpi-1.3.1/include/'
+  opt.linker = 'mpicxx'
+  opt.link << ['-lcudart', '-L/export/opt/cuda/cuda/lib64'] 
+end
+
+if Machine==:momigi
+  opt.compile << '-I/usr/lib64/mpi/gcc/openmpi/include/' 
+  opt.compile << '-I.' 
+  opt.linker = 'mpicxx'
+  opt.link << ['-lcudart', '-L/usr/local/cuda/lib64'] 
+end
+
+
+cprogram('demo', ['main.cu', 'mhd_solver.cu'], opt)

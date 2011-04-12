@@ -1,0 +1,34 @@
+
+#include <iostream>
+#include <fstream>
+#include <string>
+#include "library/cmdline.h"
+#include "library/get_time.h"
+using namespace std;
+
+#include "kernel.h"
+
+int main (int argc, char** argv) {
+
+  cmdline::parser p;
+  p.add<string>("output-filename", 'o');
+
+  if(!p.parse(argc, argv)) {
+    cerr << p.error_full() << p.usage();
+    return 1;
+  }
+
+  double time_begin = get_time<double>();
+  int ans = kernel();
+  double time_end = get_time<double>();
+  
+  string fn = p.get<string>("output-filename");
+  ofstream ofs(fn.c_str(), ios::app);
+  if (ans != 42) {
+    ofs << "WA " << 0 << endl;
+  } else {
+    ofs << "AC " << 1.0 / (time_end - time_begin) << endl;
+  }
+}
+
+

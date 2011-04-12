@@ -1,0 +1,276 @@
+/*"
+  require 'nushio_script/persistent_pod.rb'
+  require 'nushio_script/crystal'
+  require 'simulation_config_extern'
+  puts "*/
+
+#pragma once
+#include <cstdio>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <string>
+#include <vector>
+#include <map>
+
+#include "simulation_config.h"
+#include "library/thrust_vector.h"
+#include "library/device_mesh.h"
+#include "library/physics_util.h"
+
+#ifdef USE_DOUBLE_PRECISION
+const std::string kPrecisionTag = "double";
+#else
+const std::string kPrecisionTag = "float";
+#endif
+
+#ifdef USE_MPI
+#include <mpi.h>
+#ifdef USE_DOUBLE_PRECISION
+const MPI_Datatype kMPIDatatypeReal = MPI_DOUBLE_PRECISION;
+#else
+const MPI_Datatype kMPIDatatypeReal = MPI_REAL;
+#endif
+#endif
+
+/*"
+  topologies = []
+  topologies << ['int', "parallel_size", "kParallelSize", {:readonly => true} ]
+  Xyz{|sd,d|
+  topologies << ['int', "global_size_#{sd}", "kGlobalSize#{d}", {:readonly => true} ]
+  topologies << ['int', "parallel_size_#{sd}", "kParallelSize#{d}", {:readonly => true} ]
+  topologies << ['Real', "global_extent_#{sd}", "kGlobalExtent#{d}", {:readonly => true} ]
+  topologies << ['Real', "global_corner_#{sd}", "kGlobalCorner#{d}", {:readonly => true} ]
+  topologies << ['Real', "d#{d}", "kD#{d}", {:readonly => true} ]
+  }
+  
+  PersistentPod.gen('GlobalSetup', {
+  :members => [
+  ['int', 'generation', '0'],
+  ['int', 'real_size', 'sizeof(Real)', {:readonly => true} ],
+  ['std::string', 'real_precision', 'kPrecisionTag', {:readonly => true} ],
+  ['PreciseReal', 'current_time', '0']
+  ] + topologies,
+  :functions => "*/
+
+void proceed (int generation_increase, PreciseReal time_increase) {
+  generation() += generation_increase;
+  current_time() += time_increase;
+}
+/*"
+  })
+  
+  localSetupConstructor2 = lambda{ |construct_member|
+  ret = ''
+  ret += "*/
+LocalSetup (int mpi_rank0, std::string output_dir0) :  #{construct_member} {
+  mpi_rank_ = mpi_rank0;
+  int sx, sy, sz, a;
+  sx = mpi_rank0 % kParallelSizeX; a = mpi_rank0 / kParallelSizeX;
+  sy = a % kParallelSizeY;
+  sz = a / kParallelSizeY;
+  
+  mpi_rank_3d() = Triplet<int>(sx, sy, sz);
+  /*"
+    Xyz{|sd, d| ret += "*/
+  computational_corner_#{sd}_ = computational_corner()[#{d}] 
+			      = kGlobalCorner#{d} + (kLocalSize#{d} * mpi_rank_3d()[#{d}] - kMarginSize#{d}) * kD#{d};
+  /*" }
+    ret += "*/
+
+  {
+    char work[256]; std::sprintf(work, "%04d",  mpi_rank0);
+    output_directory_ = output_dir0;
+    mpi_prefix_ = work;
+  }
+  ofs_log().open(log_filename().c_str(), std::ios_base::out | std::ios_base::app);
+  ofs_bench().open(bench_filename().c_str(), std::ios_base::out | std::ios_base::app);
+}
+/*"
+  ret
+  }
+  
+  topologies = []
+  topologies << ['size_t', "computational_size", "kSize", {:readonly => true} ]
+  Xyz{|sd,d|
+  topologies << ['int', "computational_size_#{sd}", "kSize#{d}", {:readonly => true} ]
+  topologies << ['int', "margin_#{sd}", "kMarginSize#{d}", {:readonly => true} ]
+  topologies << ['Real', "computational_corner_#{sd}", "0", {:readonly => true} ]
+  topologies << ['Real', "computational_extent_#{sd}", "kExtent#{d}", {:readonly => true} ]
+  topologies << ['Real', "d#{d}", "kD#{d}", {:readonly => true} ]
+  }
+    
+    
+  PersistentPod.gen('LocalSetup', {
+  
+  :members => [
+  ['int', 'mpi_rank', '0'],
+  ['std::string', 'output_directory', ''],
+  ['std::string', 'mpi_prefix', ''],
+  ['Triplet<int>', 'mpi_rank_3d', nil, {:ephemeral => true}],
+  ['Triplet<Real>', 'computational_corner', nil, {:ephemeral => true}],
+  ['Triplet<Real>', 'computational_extent', "Triplet<Real>(kExtentX, kExtentY, kExtentZ)", {:ephemeral => true}],
+  ['PreciseReal', 'relative_displacement', '0'],
+  ['PreciseReal', 'relative_velocity', '0'],
+  ['std::ofstream', 'ofs_log', 'NULL', {:ephemeral => true, :uncompared => true}],
+  ['std::ofstream', 'ofs_bench', 'NULL', {:ephemeral => true, :uncompared => true}]
+  ] + topologies,
+
+  :constructors =>  [localSetupConstructor2], 
+  
+  :functions => "*/
+
+PositioningSetup positioning_setup () const {
+  return PositioningSetup(computational_corner(), mpi_rank_3d()[Y]);
+}
+
+std::string mkdir_prefix (std::string tag) const {
+  std::string dir_name = output_directory() + "/" + tag;
+  std::system(("mkdir -p " + dir_name).c_str());
+  return dir_name + "/" + mpi_prefix();
+}
+
+std::string log_filename () const {
+  return mkdir_prefix("log") + ".txt";
+}
+std::string bench_filename () const {
+  return mkdir_prefix("bench") + ".txt";
+}
+
+
+
+/*"  
+  })
+  puts "*/
+namespace {
+LocalSetup blancLocalSetup;
+}
+
+
+class MHDSolver {
+protected:
+  GlobalSetup global_setup_;
+  LocalSetup &local_setup_;
+
+  // device memory allocated for main calculation
+  std::vector<thrust::device_vector<Real> > buffer_;
+  std::map<Real*, int> buffer_dict_;
+
+  // aliases for buffer
+  BodyScalar density_;
+  BodyVector velocity_;
+  BodyScalar pressure_;
+  FaceVector magnet_;
+
+  BodyScalar energy_;
+  BodyVector momentum_;
+
+  BodyScalar cfl_time_;
+  
+  BodyScalar density_pace_;
+  BodyVector momentum_pace_;
+  BodyScalar energy_pace_;
+  FaceVector magnet_pace_;
+
+  BodyScalar density_flux_;
+  BodyVector momentum_flux_;
+  BodyScalar energy_flux_;
+  BodyScalar magnet_flux_ey_;
+  BodyScalar magnet_flux_ez_;
+
+  BodyScalar density_predictor_;
+  BodyVector velocity_predictor_;
+  BodyScalar pressure_predictor_;
+  FaceVector magnet_predictor_;
+
+  void initial_condition ();
+  void boundary_condition ();
+#ifdef USE_MPI
+  void communicate ();
+#endif
+  
+  // buffer for mpi communication
+  bool mpi_buffer_initialized;
+  thrust::host_vector<Real> mpi_buffer_y_inc_send;
+  thrust::host_vector<Real> mpi_buffer_y_inc_recv;
+  thrust::host_vector<Real> mpi_buffer_y_dec_send;
+  thrust::host_vector<Real> mpi_buffer_y_dec_recv;
+
+  thrust::device_vector<Real> mpi_buffer_y_inc_device;
+  thrust::device_vector<Real> mpi_buffer_y_dec_device;
+  
+  thrust::host_vector<Real> mpi_buffer_z_inc_send;
+  thrust::host_vector<Real> mpi_buffer_z_inc_recv;
+  thrust::host_vector<Real> mpi_buffer_z_dec_send;
+  thrust::host_vector<Real> mpi_buffer_z_dec_recv;
+  
+  template <int Bit>
+  thrust::device_vector<Real> &buffer_dict(Mesh<Bit, Real> mesh) {
+    return buffer_[buffer_dict_[mesh.ptr_]];
+  }
+  
+  void add_flux_kernel_caller
+  (Real dt, BodyScalar density, BodyVector velocity, BodyScalar pressure, FaceVector magnet,
+   BodyScalar density_pace, BodyVector momentum_pace, BodyScalar energy_pace, FaceVector magnet_pace) ;
+
+  thrust::host_vector<Real> host_buffer_;
+  void fread_device(FILE *fp, thrust::device_vector<Real> &xs) {
+    std::fread(&host_buffer_[0], sizeof(Real), kSize, fp);  
+    xs = host_buffer_;
+  }
+  void fwrite_device(FILE *fp, thrust::device_vector<Real> &xs) {
+    host_buffer_ = xs;
+    std::fwrite(&host_buffer_[0], sizeof(Real), kSize, fp);  
+  }
+  template<class T>
+  bool fread_singlet(FILE *fp, const T x) {
+    T y;
+    std::fread(&y, sizeof(T), 1, fp);
+    return x==y;
+  }
+  template<class T>
+  bool fwrite_singlet(FILE *fp, const T x) {
+    std::fwrite(&x, sizeof(T), 1, fp);
+    return true;
+  }
+
+public:
+  MHDSolver(LocalSetup &local_setup = blancLocalSetup);
+
+  GlobalSetup &global_setup()
+  { return global_setup_; }
+  const GlobalSetup &global_setup() const
+  { return global_setup_; }
+  LocalSetup &local_setup()
+  { return local_setup_; }
+  const LocalSetup &local_setup() const
+  { return local_setup_; }
+  template<class T>
+  Triplet<Real> positioning (const T& positioner) const {
+    return positioner.position(local_setup().positioning_setup());
+  }
+  
+  PreciseReal current_time () { return global_setup().current_time(); }
+  int generation () { return global_setup().generation(); }
+
+  // try to integrate until the goal time,
+  // returns true if goal_time is reached,
+  // exits and returns false if the wallclock time is reached earlier.
+  // ignores wallclock_time_limit if it's negative.
+  bool proceed (const Real goal_time, const PreciseReal wallclock_time_limit = -1);
+  
+  void dump (std::string);
+  bool read (std::string); // returns true if successful
+  bool write(std::string);
+
+  void initialize_state ();
+  void load_state (std::string);
+  void save_state (std::string);
+  
+  int monitor (); // called every timestep. return non-zero to break
+  int initial_event (); // called just before calculation starts 
+  int final_event ();  // called after all calculation ends
+
+  void relative_displacement (PreciseReal t, int index, Real &normalized_displacement, int &int_displacement, Real &minor_displacement);
+  void update_displacement (); 
+};

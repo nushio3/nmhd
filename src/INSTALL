@@ -1,0 +1,11 @@
+**** how to setup
+
+first type
+
+> rake link
+
+then 
+
+> rake test
+
+> rake

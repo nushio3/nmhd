@@ -1,0 +1,65 @@
+/*"
+  require 'nushio_script/persistent_pod.rb'
+  puts "*/
+
+#include <gtest/gtest.h>
+#include <fstream>
+#include <iostream>
+#include <string>
+#include <sstream>
+#include <vector>
+
+/*"
+  PersistentPod.gen('POD', {
+  :members => [
+  ['int', 'a', '0'], 
+  ['int', 'b', '0'],
+  ['std::string', 'fn'],
+  ['std::string', 'tag'],
+  ['std::string', 'bin']
+  ],
+
+  :functions => "*/
+void equate () {
+  b() = a();
+}
+/*"})
+  puts "*/
+
+using namespace std;
+
+
+TEST(persistent_pod, sample) {
+  POD p;
+  for (int i = 0; i < 100; ++i) {
+    p.a() = i; p.equate();
+    EXPECT_EQ(p.a(), p.b());
+  }
+}
+
+TEST(persistent_pod, fileIO) {
+  POD p, q, p2, q2;
+  for (int i = 0; i < 256; ++i) {
+    ostringstream oss; oss << "tmp" << i;
+    p.a() = i; p.b() = i*i;
+    p.tag() = "case " + oss.str();
+    p.bin() = "";
+    for (int j = 0; j < 256; ++j) {
+      p.bin() += (unsigned char)((i*j)%256);
+    }
+    
+    oss << ".txt";
+    p.fn() = oss.str();
+    p2 = p; p2.b() += 42;
+    {
+      ofstream ofs("tmp");
+      ofs << p << p2;
+    }
+    {
+      ifstream ifs("tmp");
+      ifs >> q >> q2;
+    }
+    EXPECT_EQ(p, q);
+    EXPECT_EQ(p2, q2);
+  }
+}

@@ -1,0 +1,35 @@
+/*"
+  require "nushio_script/simulation_config"
+  require "nushio_script/crystal"
+
+  require "simulation_config_extern"
+  
+  sizes = XYZ{|d|
+  sz = (d==Normal) ? 512 : 1
+  "*/
+const int kSize#{d} = #{sz};
+/*" }.join()
+  
+   Config.generate! "*/
+
+#define  USE_DOUBLE_PRECISION
+#undef   USE_SINGLE_PRECISION
+
+
+#define CRYSTAL_PERIODIC_X
+#define CRYSTAL_PERIODIC_Y 
+#define CRYSTAL_PERIODIC_Z
+
+typedef float Real;
+
+#{sizes}
+
+const Real kCflFactor = 0.5f;
+
+const Real kExtent#{Normal} = 2.0;
+const Real kCorner#{Normal} = -1.0;
+
+typedef #{Normal}Axis ShockNormalAxis;
+
+
+const std::string simulation_tag = "#{SimulationTag}";

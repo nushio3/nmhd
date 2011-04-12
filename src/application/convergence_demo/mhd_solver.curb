@@ -1,0 +1,114 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+#include "library/direction.h"
+#include "simulation_config.h"
+#include "library/physics_util.h"
+
+
+__device__ void set_initial_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  ShockNormalAxis ez;
+  typename ShockNormalAxis::Next ex;
+  typename ShockNormalAxis::Prev ey;
+  
+  const Triplet<Real> r = o.position(pos_info);
+
+  /*
+  density[o] = sq(kGamma);
+  pressure[o] = kGamma;
+  velocity[ex][o] = -sinR(r[ey]); 
+  velocity[ey][o] =  sinR(r[ex]);
+  velocity[ez][o] = 0; 
+
+  magnet[ex][o-direction::half(ex)] = -sinR(r[ey]); ;
+  magnet[ey][o-direction::half(ey)] =  sinR(2*r[ex]); 
+  magnet[ez][o-direction::half(ez)] =  0;
+  */
+  
+  density[o]  = 1.0f;
+  pressure[o] = kGamma - 1.0f;
+  velocity[ex][o] =  10.0f * sinR(0.5 * r[ey]); 
+  velocity[ey][o] =  10.0f * sinR(r[ex]);
+  velocity[ez][o] = 0; 
+
+  magnet[ex][o-direction::half(ex)] =  0;
+  magnet[ey][o-direction::half(ey)] =  0; 
+  magnet[ez][o-direction::half(ez)] =  0;
+
+}
+
+__device__ void set_boundary_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  /*
+  const int kMargin = 4;
+  if(o[X] < kMargin || o[X] > kSizeX - kMargin - 1) {
+    set_initial_condition(o, density, velocity, pressure, magnet);
+    }*/
+}
+
+#include "library/mhd_solver.inl"
+
+#include <cstdlib>
+#include <fstream>
+#include <iomanip>
+#include <iostream>
+#include <sstream>
+using namespace std;
+
+void MHDSolver::dump (string tag) {
+  string dir = "stat/" + simulation_tag;
+  
+  system(("mkdir -p " + dir).c_str());
+  {
+    ofstream ofs((dir + "/dump_"+tag+"_energies.txt").c_str());
+    thrust::host_vector<Real> rho(kSize), vx(kSize), vy(kSize), vz(kSize), p(kSize), bx(kSize), by(kSize), bz(kSize);
+    rho = buffer_dict(density_);
+    p = buffer_dict(pressure_);
+    /*" Xyz{|dir, cdir| puts "*/
+    v#{dir} = buffer_dict(velocity_[#{cdir}]);
+    b#{dir} = buffer_dict(magnet_[#{cdir}]);
+    /*" }; puts "*/
+
+    
+    double kinetic_energy = 0, internal_energy = 0, magnetic_energy = 0, total_energy = 0;
+    double momentum_x = 0, momentum_y = 0, momentum_z = 0;
+    for (int i = 0; i < kSize; ++i) {
+      double e_kin = 0.5 * rho[i] * (sq(vx[i]) + sq(vy[i]) + sq(vz[i]) );
+      double e_int = p[i]  / (kGamma-1);
+      double e_mag = 0.5 * (sq(bx[i]) + sq(by[i]) + sq(bz[i]));
+      kinetic_energy += e_kin;
+      internal_energy += e_int;
+      magnetic_energy += e_mag;
+      total_energy += e_kin + e_int + e_mag;
+      momentum_x += rho[i] * vx[i];
+      momentum_y += rho[i] * vy[i];
+      momentum_z += rho[i] * vz[i];
+    }
+    ofs << setprecision(30);
+    const double dV = dR(X) * dR(Y) * dR(Z);
+    ofs << "momX     " << momentum_x * dV << endl;
+    ofs << "momY     " << momentum_y * dV << endl;
+    ofs << "momZ     " << momentum_z * dV << endl;
+    ofs << "kinetic  " << kinetic_energy * dV << endl;
+    ofs << "internal " << internal_energy * dV << endl;
+    ofs << "magnetic " << magnetic_energy * dV << endl;
+    ofs << "total    " << total_energy * dV<< endl;
+  }
+}
+
+int MHDSolver::monitor () {
+  return 0;
+}
+
+
+int MHDSolver::initial_event () {
+  return 0;
+}
+
+int MHDSolver::final_event () {
+  return 0;
+}
+

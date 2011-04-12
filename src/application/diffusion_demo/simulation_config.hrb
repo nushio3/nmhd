@@ -1,0 +1,15 @@
+/*"
+  require "nushio_script/simulation_config"
+   Config.generate! "*/
+
+#define CRYSTAL_PERIODIC_X
+#define CRYSTAL_PERIODIC_Y 
+#define CRYSTAL_PERIODIC_Z
+
+typedef double Real;
+
+const int kSizeX = 128;
+const int kSizeY = 128;
+const int kSizeZ = 128;
+
+

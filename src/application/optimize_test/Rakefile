@@ -1,0 +1,7 @@
+require 'nushio_script/rake'
+require 'rake/clean'
+
+cinclude 'kernel.cpp' => 'kernel.h'
+cinclude 'main.cpp' => 'kernel.h'
+
+cprogram('auto_optimize', ['kernel.cpp', 'main.cpp'])

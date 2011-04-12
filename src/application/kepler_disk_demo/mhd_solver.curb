@@ -1,0 +1,139 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+#include "library/direction.h"
+#include "simulation_config.h"
+#include "library/physics_util.h"
+
+
+
+__device__ void set_initial_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  XAxis ex;
+  YAxis ey;
+  ZAxis ez;
+  
+  Triplet<Real> r = o.position(pos_info);
+  Triplet<Real> local_position = o.position(Triplet<Real>(-gExtentX/2, -gExtentY/2, -gExtentZ/2));
+  Real boost = 0;
+
+  boost = - kDifferentialRotationIndex * kOmega * local_position[Y] ;
+  
+  density[o] = sq(kGamma) ; 
+  pressure[o] = kGamma;
+  velocity[ex][o] = 0;
+  velocity[ey][o] = 0;
+  velocity[ez][o] = 0; 
+  velocity[X][o] += boost;
+  
+  magnet[ex][o-direction::half(ex)] = -0.01 * gInitialMagneticField * sinR(2 * kPi * r[ez] / gGlobalExtentZ); 
+  magnet[ey][o-direction::half(ey)] =  0.01 * gInitialMagneticField * sinR(2 * kPi * r[ez] / gGlobalExtentZ); 
+  magnet[ez][o-direction::half(ez)] = gInitialMagneticField;
+}
+
+__device__ void set_boundary_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  /*
+  const int kMargin = 4;
+  if(o[X] < kMargin || o[X] > kSizeX - kMargin - 1) {
+    set_initial_condition(o, density, velocity, pressure, magnet);
+    } */
+}
+
+
+PreciseReal initial_displacement (int index) {
+  return 0;
+}
+
+PreciseReal relative_velocity (int index) {
+  return -kDifferentialRotationIndex * kOmega * kLocalExtentY;
+}
+
+
+/*"
+  
+  pat = Xyzi{|dir, cdir, counter|
+  bit = 7^BitMask(counter)
+  [bit,cdir]
+  } 
+  pat << [7,nil]
+  pat.each{ |bit, cdir|
+  puts "*/
+__device__ Triplet<Real> external_acceleration
+(BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet, RCo<#{bit}> center) {
+  /*" if cdir; puts "*/
+  #{cdir}Half hex;
+  Real vX = average(velocity[X][center-hex], velocity[X][center+hex]);
+  Real vY = average(velocity[Y][center-hex], velocity[Y][center+hex]);
+  Real vZ = average(velocity[Z][center-hex], velocity[Z][center+hex]);
+  /*" else; puts "*/
+  Real vX = velocity[X][center];
+  Real vY = velocity[Y][center];
+  Real vZ = velocity[Z][center];
+  /*" end; puts "*/
+  Triplet<Real> local_position = center.position(Triplet<Real>(-gExtentX/2, -gExtentY/2, -gExtentZ/2));
+  
+  return Triplet<Real> (-Real(2.0) * gOmega * vY,
+			Real(2.0) * gOmega * vX + Real(2.0) * gDifferentialRotationIndex * sq(gOmega) * local_position[Y],
+			0);
+}
+
+/*"
+  }
+  
+  puts "*/
+
+
+#include "library/mhd_solver.inl"
+
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+using namespace std;
+
+void MHDSolver::dump (string tag) {
+  string prefix = local_setup().mkdir_prefix(tag);
+  write(prefix + ".bin");
+
+  ofstream ofs((prefix + "_setup.txt").c_str());
+  ofs << global_setup() << endl
+      << "################" << endl
+      << local_setup() << endl;
+}
+
+int MHDSolver::monitor () {
+  host_buffer_ = buffer_dict(magnet_[X]);
+  PreciseReal numerator = 0, denominator = 0;
+  for (int i = 0; i < host_buffer_.size(); ++i) {
+    numerator += sq(host_buffer_[i]);
+    ++denominator;
+  }
+  PreciseReal bx2 = numerator / denominator;
+
+  host_buffer_ = buffer_dict(magnet_[Y]);
+  numerator = 0, denominator = 0;
+  for (int i = 0; i < host_buffer_.size(); ++i) {
+    numerator += sq(host_buffer_[i]);
+    ++denominator;
+  }
+  PreciseReal by2 = numerator / denominator;
+
+  local_setup().ofs_log() 
+    << "t: " << current_time()
+    << " B_init: " << kInitialMagneticField
+    << " Bx_squared_average: " << bx2 
+    << " By_squared_average: " << by2 << endl;
+  return 0;
+}
+
+int MHDSolver::initial_event () {
+  return 0;
+}
+
+int MHDSolver::final_event () {
+  return 0;
+}
+

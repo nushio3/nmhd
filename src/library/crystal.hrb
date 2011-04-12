@@ -1,0 +1,134 @@
+#pragma once
+
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+
+#include "library/direction.h"
+#include "simulation_config.h"
+
+
+struct PositioningSetup {
+  PositioningSetup(Triplet<Real> corner0, int y0) : corner(corner0), mpi_rank_y(y0) {}
+  Triplet<Real> corner; // Physical coordinate of the computational corner.
+  int mpi_rank_y;
+};
+
+template<int Bit> struct RCo{
+  int x_,y_,z_; addr_t addr_;
+  __device__ __host__ RCo (int x, int y, int z, addr_t addr0) : x_(x), y_(y), z_(z), addr_(addr0) {}
+  __device__ __host__ RCo (int x, int y, int z) : x_(x), y_(y), z_(z) {
+    calc_addr();
+  }
+  __device__ __host__ explicit RCo (addr_t addr0) : addr_(addr0) {
+    x_ = addr0 % kSizeX;
+    y_ = (addr0 / kSizeX) % kSizeY;
+    z_ = (addr0 / kSizeX) / kSizeY;
+  }
+  /*" boundPos = lambda{|dir| cdir=dir.upcase; "*/
+
+#ifdef CRYSTAL_PERIODIC_#{cdir}
+  ((#{dir}_ + kSize#{cdir}) % kSize#{cdir})
+#else
+  (#{dir}_)
+#endif
+  /*"}
+    puts "*/
+  __device__ __host__
+  int bit() const { return Bit; }
+  __device__ __host__
+  int addr() const {
+    return addr_;
+  }
+  __device__ __host__
+  int calc_addr() {
+    return addr_ = (#{boundPos['z']} * kSizeY + #{boundPos['y']}) * kSizeX + #{boundPos['x']} ;
+  }
+  /*" 
+    Xyz{|dir,cdir| puts "*/
+  __device__ __host__
+  int operator[](#{cdir}Axis) const { return #{boundPos[dir]}; }
+  /*" }
+    puts "*/
+  
+  __device__ __host__
+  Triplet<Real> position(const Triplet<Real> &computational_corner) const {
+/*"
+  coords = Xyzi{|dir,cdir,ctr| "*/
+    computational_corner[#{cdir}] + kD#{cdir} * (Real(#{boundPos[dir]}) + (Bit & #{BitMask(ctr)} == 0 ? Real(0) : Real(0.5f)))
+/*" }.join("\n,\n")
+  puts "*/ ;
+    return Triplet<Real> (#{coords});
+  }
+  __device__ __host__
+  Triplet<Real> position(const PositioningSetup &pos_setup) const {
+    return position(pos_setup.corner);
+  }
+};
+
+
+template<int Bit, class T> struct Mesh {
+  T *ptr_;
+  __device__ __host__ Mesh(T *ptr) : ptr_(ptr) {}
+  __device__ __host__ T& operator[](RCo<Bit> coord) { return ptr_[coord.addr()]; }
+  template<int Bit2> struct Shift {
+    typedef Mesh<Bit ^ Bit2, T> t;
+  };
+  template<int Bit2>
+  Mesh<Bit ^ Bit2, T> shift () const {
+    return Mesh<Bit ^ Bit2, T>(ptr_);
+  }
+  template<class Axis>
+  Mesh<Bit ^ Axis::mask, T> shift (Axis a) const {
+    return Mesh<Bit ^ Axis::mask, T>(ptr_);
+  }
+  T *ptr() const { return ptr_; }
+};
+
+/*"
+  ['+', '-'].each{|op|
+  Xyz{|dir, cdir| puts "*/
+template <int Bit>
+__device__ __host__
+RCo<Bit> operator#{op}(const RCo<Bit> rco, #{cdir}Axis) {
+  return RCo<Bit>
+    (/*" puts Xyz{|dir2,|
+       if dir==dir2; "*/
+     rco.#{dir2}_ #{op} 1
+     /*" else; "*/
+     rco.#{dir2}_
+     /*" end }.join(',')
+       puts "*/
+     );
+}
+/*" }}
+
+  [['+', 0], ['-', 1]].each{|op, parity|
+  Xyzi{|dir, cdir, ctr|
+  8.times{|bit|
+  bit2 = bit ^ (BitMask(ctr))
+  inc = ((bit & (BitMask(ctr))) / (BitMask(ctr))) ^parity;
+  inc_stmt = if inc > 0
+  "#{op} 1"
+  else
+  ''
+  end
+  puts "*/
+namespace {
+__device__ __host__  
+RCo<#{bit2}> operator#{op}(const RCo<#{bit}> rco, #{cdir}Half) {
+  /*" args =  Xyz{|dir2,|
+    if dir==dir2; "*/
+  rco.#{dir2}_ #{inc_stmt}
+  /*" else; "*/
+  rco.#{dir2}_ #{}
+  /*" end }
+    args << 'rco.addr_' if inc_stmt == ''
+    puts "*/;
+  return RCo<#{bit2}>(#{args.join(',')});
+}
+}
+/*" }}}
+
+ puts "*/
+

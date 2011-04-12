@@ -1,0 +1,94 @@
+/*"
+  require 'nushio_script/crystal'
+  puts "*/
+#include "library/direction.h"
+#include "simulation_config.h"
+#include "library/physics_util.h"
+
+#define  kHassouVelocity Real(1.8)
+#define  kHassouDisplacement Real(1.0)
+
+__device__ void set_initial_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  ShockNormalAxis ez;
+  typename ShockNormalAxis::Next ex;
+  typename ShockNormalAxis::Prev ey;
+  
+  Triplet<Real> r = o.position(pos_info);
+  Real boost = 0;
+
+  if (pos_info.mpi_rank_y==1) {
+    boost = -kHassouVelocity;
+    r[X] += kHassouDisplacement;
+  }
+  
+  density[o] = sq(kGamma);
+  pressure[o] = kGamma;
+  velocity[ex][o] = -sinR(r[ey]);
+
+  
+  velocity[ey][o] =  sinR(r[ex]);
+  velocity[ez][o] = 0; 
+  velocity[X][o] += boost;
+  
+  magnet[ex][o-direction::half(ex)] = -sinR(r[ey]); ;
+  magnet[ey][o-direction::half(ey)] =  sinR(2*r[ex]); 
+  magnet[ez][o-direction::half(ez)] = 0;
+}
+
+__device__ void set_boundary_condition
+(const PositioningSetup &pos_info, const RCo<7> &o,
+ BodyScalar &density, BodyVector &velocity, BodyScalar &pressure, FaceVector &magnet) {
+  /*
+  const int kMargin = 4;
+  if(o[X] < kMargin || o[X] > kSizeX - kMargin - 1) {
+    set_initial_condition(o, density, velocity, pressure, magnet);
+    }*/
+}
+
+
+PreciseReal initial_displacement (int index) {
+  if (index == 0) return kHassouDisplacement;
+  if (index == 1) return -kHassouDisplacement;
+  return 0;
+}
+
+PreciseReal relative_velocity (int index) {
+  if (index == 0) return kHassouVelocity;
+  if (index == 1) return -kHassouVelocity;
+  return 0;
+}
+
+
+
+#include "library/mhd_solver.inl"
+
+#include <cstdlib>
+#include <fstream>
+#include <iostream>
+#include <sstream>
+using namespace std;
+
+void MHDSolver::dump (string tag) {
+  string prefix = local_setup().mkdir_prefix(tag);
+  write(prefix + ".bin");
+
+  ofstream ofs((prefix + "_setup.txt").c_str());
+  ofs << global_setup() << endl
+      << "################" << endl
+      << local_setup() << endl;
+}
+
+int MHDSolver::monitor () {
+  return 0;
+}
+
+int MHDSolver::initial_event () {
+  return 0;
+}
+
+int MHDSolver::final_event () {
+  return 0;
+}
+

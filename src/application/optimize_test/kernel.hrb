@@ -1,0 +1,16 @@
+/*"
+  require 'nushio_script/optimization'
+
+  Optimization::optimize{ |optimizer|
+
+  10.times{|i|
+  b = optimizer.positive_integer("int_param_#{i}", 1)
+  puts "*/
+const int kBetaFactor#{i} = #{( (1.0+0.1*i)*(b-1024)**2 ).to_i};
+/*" }
+  puts "*/
+int kernel ();
+
+/*"
+  } # end of optimization
+  "*/

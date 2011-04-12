@@ -1,0 +1,72 @@
+/*"
+  require "nushio_script/simulation_config"
+  require "nushio_script/crystal"
+  require "nushio_script/detect_machine"
+
+  require "simulation_config_extern"
+
+  mpistr = ''
+  if UseMpi
+  mpistr =  "*/
+#define USE_MPI
+/*"
+  end
+
+  parallel_d = 'Y'
+  parallel_d = 'Z' if Normal == 'Y'
+  
+  sizes = XYZ{|d|
+  sz = (d!=Normal) ? 720: 1
+  msz = (d!=Normal && d!= 'X') ? 4: 0 
+  "*/
+const int kGlobalSize#{d} = #{sz};
+const Real kGlobalExtent#{d} = 2.0 * kPi;
+const Real kGlobalCorner#{d} = 0.0;
+const int kMarginSize#{d} =  #{msz};
+/*" }.join
+  
+
+precision_str = ''
+case Machine
+when :tsubame
+precision_str = "*/
+#define  USE_DOUBLE_PRECISION
+#undef   USE_SINGLE_PRECISION
+/*"
+when :degima, :momigi
+precision_str = "*/
+#define  USE_SINGLE_PRECISION
+#undef   USE_DOUBLE_PRECISION
+/*"
+else
+end
+
+   Config.generate! "*/
+
+const int kParallelSize#{parallel_d} = #{GPUPerNode};
+
+#{mpistr}
+
+#{precision_str}
+
+#define CRYSTAL_PERIODIC_X
+#define CRYSTAL_PERIODIC_Y 
+#define CRYSTAL_PERIODIC_Z
+
+typedef float Real;
+
+#{sizes}
+
+const Real kCflFactor = 0.4f;
+
+
+typedef #{Normal}Axis ShockNormalAxis;
+
+
+const std::string simulation_tag = "#{SimulationTag}";
+
+
+const Real kDifferentialRotationIndex = 1.5;
+const Real kOmega = 1.0;
+__device__ const Real gDifferentialRotationIndex = kDifferentialRotationIndex;
+__device__ const Real gOmega = kOmega;
